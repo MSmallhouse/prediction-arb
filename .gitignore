@@ -1,0 +1,16 @@
+# Secrets
+.env
+*.pem
+*.key
+
+# Data logs (can get large, contain trading data)
+arb_opportunities*.csv
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# OS
+.DS_Store
