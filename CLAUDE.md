@@ -36,13 +36,18 @@ Slug derived from Kalshi event ticker: `KXMLBGAME-26APR221410BALKC` → `mlb-bal
 ## Fee Model
 
 ```python
-kalshi_fee  = 0.07 * P * (1 - P)          # taker per contract
-poly_fee    = 0.03 * P^2 * (1 - P)        # sports taker per share
+kalshi_fee  = 0.07 * P * (1 - P)          # taker per contract (confirmed correct)
+poly_fee    = 0.03 * P^2 * (1 - P)        # sports taker per share (confirmed correct)
 tax_rate    = 0.2855                        # federal 24% + Utah 4.55%
 after_tax   = net_pretax * 0.7145
 ```
 
-MIN_GROSS_SPREAD = 4% to flag. LOG_GROSS_THRESHOLD = 2% to write to CSV.
+**Fee notes:**
+- Kalshi: standard 7¢/dollar-of-risk. Makers pay ~25% of taker fee. We are always takers.
+- Polymarket: `docs.polymarket.com` shows simpler `0.03 * P * (1-P)`, but `help.polymarket.com` sports fee formula expands to `0.03 * P^2 * (1-P)` (the p² version). Peak effective rate = 0.75% at P=0.50. Fee updated March 30, 2026 — our markets (April 2026) use this formula. Makers get rebates; we are always takers.
+- Both formulas are per-share/per-contract. At P=0.5, Kalshi fee ≈ 1.75¢, Poly fee ≈ 0.375¢.
+
+MIN_GROSS_SPREAD = 4% to flag. LOG_GROSS_THRESHOLD = 2% to write to arb_opportunities.csv.
 
 ## Team Name Mapping
 
@@ -69,6 +74,39 @@ Kalshi uses city names (`yes_sub_title`), Polymarket uses full team names (MLB) 
 - Best candidates for eventual execution layer
 
 **Implication:** In-game arbs are the primary target. Pre-game arbs are interesting for data but require caution on price reliability.
+
+## WebSocket Streaming (not built yet)
+
+Current 10s REST polling introduces ~5–10s of latency vs the market. In-game arbs close within 1–2 poll cycles, so WebSocket is required to capitalize on them reliably.
+
+**Kalshi WebSocket**
+- URL: `wss://api.elections.kalshi.com/trade-api/ws/v2`
+- **Auth required** even for public data: RSA-PSS sign `{timestamp}GET/trade-api/ws/v2`, include `KALSHI-ACCESS-KEY`, `KALSHI-ACCESS-SIGNATURE`, `KALSHI-ACCESS-TIMESTAMP` headers
+- Subscribe to `ticker` channel per market ticker:
+  ```json
+  {"id": 1, "cmd": "subscribe", "params": {"channels": ["ticker"], "market_ticker": "KXMLBGAME-..."}}
+  ```
+- Tick message fields: `yes_ask_dollars`, `yes_bid_dollars`, `volume_fp`, `open_interest_fp`
+- Heartbeat: server sends Ping every 10s; respond with Pong
+
+**Polymarket CLOB WebSocket**
+- URL: `wss://ws-subscriptions-clob.polymarket.com/ws/market`
+- **No auth required** for market channel
+- Subscribe by YES token ID:
+  ```json
+  {"assets_ids": ["0x...token_id"], "type": "market"}
+  ```
+- Relevant events: `price_change`, `best_bid_ask` — these carry live ask prices (same as CLOB REST)
+- Heartbeat: client sends `PING` every 10s, server responds `PONG`
+- Dynamic subscribe: send `{"assets_ids": [...], "operation": "subscribe"}` to add markets without reconnecting
+
+**Implementation plan:**
+1. Establish Kalshi WS on startup (after RSA-PSS auth), subscribe to all discovered MLB/NBA tickers
+2. Establish Polymarket WS on startup, subscribe to YES token IDs for all matched markets
+3. Maintain in-memory price store updated by both WS streams
+4. Run arb check on every price update (sub-second latency)
+5. On new market discovery (hourly), subscribe new tickers/tokens to existing connections
+6. Fall back to REST if either WS disconnects (reconnect with exponential backoff)
 
 ## Execution Layer (not built yet)
 
