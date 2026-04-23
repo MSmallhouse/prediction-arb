@@ -127,7 +127,7 @@ async def _check_arbs() -> None:
 
 # ── WS price callbacks ────────────────────────────────────────────────────────
 
-async def _on_kalshi_price(market_ticker: str, new_ask: float, new_bid: float) -> None:
+async def _on_kalshi_price(market_ticker: str, new_ask: float, new_bid: float, new_no_ask: float, new_no_bid: float) -> None:
     global _last_tick
     market = kalshi_by_ticker.get(market_ticker)
     if market is None:
@@ -136,6 +136,10 @@ async def _on_kalshi_price(market_ticker: str, new_ask: float, new_bid: float) -
     market.yes_ask = new_ask
     if new_bid > 0:
         market.yes_bid = new_bid
+    if new_no_ask > 0:
+        market.no_ask = new_no_ask
+    if new_no_bid > 0:
+        market.no_bid = new_no_bid
     market.fetched_at = datetime.now(timezone.utc)
     _last_tick = market.fetched_at
     await _check_arbs()

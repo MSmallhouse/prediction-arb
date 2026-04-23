@@ -32,8 +32,9 @@ _FIELDNAMES = [
     "opener",                # which platform repriced first: "kalshi" or "poly"
     "minutes_to_first_pitch", # minutes until game start at first_seen (negative = in-game)
     "kalshi_team",
+    "kalshi_side",           # "YES" or "NO" — which Kalshi order book was cheaper
     "poly_team",
-    "kalshi_ask",            # ask price at first_seen
+    "kalshi_ask",            # effective ask used (min of YES ask or opposing NO ask)
     "kalshi_bid",            # bid price at first_seen (0 if not yet received from WS)
     "poly_ask",              # ask price at first_seen
     "poly_bid",              # bid price at first_seen (0 if not yet received from WS)
@@ -151,7 +152,10 @@ def log_arb_duration(tracked: TrackedArb, event: str, filepath: Path = DURATION_
         writer = csv.DictWriter(f, fieldnames=_FIELDNAMES)
         if write_header:
             writer.writeheader()
-        mins_to_pitch = (opp.game_datetime - tracked.first_seen).total_seconds() / 60
+        # Use Polymarket game_datetime (gameStartTime) — Kalshi falls back to
+        # expected_expiration_time (~3h after first pitch) when occurrence_datetime
+        # is null, which keeps the counter positive well into the game.
+        mins_to_pitch = (opp.poly_market.game_datetime - tracked.first_seen).total_seconds() / 60
         writer.writerow({
             "event": event,
             "game": opp.game_label,
@@ -165,8 +169,9 @@ def log_arb_duration(tracked: TrackedArb, event: str, filepath: Path = DURATION_
             "opener": tracked.opener,
             "minutes_to_first_pitch": f"{mins_to_pitch:.1f}",
             "kalshi_team": opp.kalshi_market.team,
+            "kalshi_side": opp.kalshi_side,
             "poly_team": opp.poly_market.team,
-            "kalshi_ask": f"{opp.kalshi_market.yes_ask:.4f}",
+            "kalshi_ask": f"{opp.kalshi_effective_ask:.4f}",
             "kalshi_bid": f"{opp.kalshi_market.yes_bid:.4f}",
             "poly_ask": f"{opp.poly_market.yes_ask:.4f}",
             "poly_bid": f"{opp.poly_market.yes_bid:.4f}",

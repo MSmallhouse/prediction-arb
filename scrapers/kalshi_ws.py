@@ -152,15 +152,19 @@ class KalshiWSClient:
             ask = float(raw_ask)
         except (ValueError, TypeError):
             return
-        bid = 0.0
-        raw_bid = data.get("yes_bid_dollars")
-        if raw_bid is not None:
+
+        def _safe_float(val) -> float:
             try:
-                bid = float(raw_bid)
+                return float(val) if val is not None else 0.0
             except (ValueError, TypeError):
-                bid = 0.0
+                return 0.0
+
+        bid    = _safe_float(data.get("yes_bid_dollars"))
+        no_ask = _safe_float(data.get("no_ask_dollars"))
+        no_bid = _safe_float(data.get("no_bid_dollars"))
+
         if 0.0 < ask < 1.0:
-            await self._on_price_update(ticker, ask, bid)
+            await self._on_price_update(ticker, ask, bid, no_ask, no_bid)
 
 
 if __name__ == "__main__":

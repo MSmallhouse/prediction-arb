@@ -27,7 +27,7 @@ scrapers/polymarket_ws.py — Polymarket CLOB WebSocket client (no auth)
 
 ## Markets
 
-- **Kalshi**: `KXMLBGAME` (MLB), `KXNBAGAME` (NBA), `KXNHLGAME` (NHL). Series → events → 2 markets per game (one per team). Price field: `yes_ask_dollars`.
+- **Kalshi**: `KXMLBGAME` (MLB), `KXNBAGAME` (NBA), `KXNHLGAME` (NHL). Series → events → 2 markets per game (one per team). Price field: `yes_ask_dollars`. Each market also has `no_ask_dollars` — buying NO on Team B is economically identical to buying YES on Team A (same $1 payout), but the two order books can have different prices. `arb_detector` checks both and uses whichever is cheaper; `kalshi_side` column records which was used.
 - **Polymarket**: Gamma API for discovery + prices. CLOB WS for live prices. Slug format: `{sport}-{away}-{home}-YYYY-MM-DD`.
 
 ## Matching
@@ -39,16 +39,17 @@ Slug derived from Kalshi event ticker: `KXMLBGAME-26APR221410BALKC` → `mlb-bal
 ## Fee Model
 
 ```python
-kalshi_fee  = 0.07 * P * (1 - P)          # taker per contract (confirmed correct)
-poly_fee    = 0.03 * P^2 * (1 - P)        # pre-v2 formula — NEEDS RE-VERIFICATION post-2026-04-28
+kalshi_fee  = 0.07 * P * (1 - P)          # taker per contract (confirmed)
+poly_fee    = 0.03 * P * (1 - P)          # taker per share (confirmed post-v2)
 tax_rate    = 0.2855                        # federal 24% + Utah 4.55%
 after_tax   = net_pretax * 0.7145
 ```
 
 **Fee notes:**
-- Kalshi: standard 7¢/dollar-of-risk. Makers pay ~25% of taker fee. We are always takers.
-- Polymarket pre-v2: `0.03 * P^2 * (1-P)`. Post-v2 (after 2026-04-28): `C × feeRate × p × (1-p)` — dynamic per market, exponent changed from p² to p (roughly doubles fee at P=0.5). Re-verify `POLY_SPORTS_FEE_COEFF` and `arb_detector.poly_fee()` against a live sports market.
-- Both formulas are per-share/per-contract. At P=0.5, Kalshi fee ≈ 1.75¢, pre-v2 Poly fee ≈ 0.375¢.
+- Kalshi: 7¢/dollar-of-risk. We are always takers.
+- Polymarket: `0.03 * P * (1-P)`, confirmed against docs post-CLOB v2 (2026-04-28). Peaks at **0.75%** at P=0.5.
+- Combined ceiling at P=0.5: Kalshi 1.75¢ + Poly 0.75¢ = **2.5¢ per $1 payout** (~2.5% gross spread consumed by fees at worst case).
+- Both formulas are per-share/per-contract.
 
 MIN_GROSS_SPREAD = 3% (dual logging: 3% → `arb_durations_3.csv`, 4% → `arb_durations_4.csv`).
 
@@ -63,7 +64,7 @@ All maps in `config.py`. Must use sport-specific tables — MLB/NBA/NHL abbrevia
 
 ## Known Data Quirks
 
-- Kalshi contingent playoff games: `occurrence_datetime` missing, fallback to `expected_expiration_time` (~3h after game start). This means Kalshi game_datetime ≈ expiration, not tip-off.
+- Kalshi `game_datetime`: uses `occurrence_datetime` when available, falls back to `expected_expiration_time` (~3h after game start) when null. Regular season games are also affected. Use Polymarket `game_datetime` (from `gameStartTime`) for time-relative calculations like `minutes_to_first_pitch` — it reliably reflects actual first pitch.
 - Late-night games (>8 PM ET): Kalshi ticker date = local venue date, Polymarket slug date = same local date. They match correctly.
 - Future series games (low OI, vol_24h = OI): brand-new market, all volume in last 24h. Prices unreliable — wide CLOB spread.
 - $0 volume Polymarket markets: CLOB may return valid ask (limit orders exist) but spread is wide. Treat with caution.
@@ -71,17 +72,28 @@ All maps in `config.py`. Must use sport-specific tables — MLB/NBA/NHL abbrevia
 ## Arb Philosophy / Observations
 
 **Pre-game arbs (days out):**
-- Appear on future games with low OI/volume on both sides
-- Prices stale or wide bid-ask → spread may not be real or executable
-- More time to act but thin liquidity limits position size
+- Low OI/volume on both sides — prices stale, wide bid-ask
+- Spread may not be real or executable
+- Avoid until markets mature closer to game time
+
+**Pre-game arbs (same-day, 0–3 hours before first pitch):**
+- Observed: 400k–1.2M Kalshi OI, $64k–$391k Polymarket liquidity — comparable to in-game
+- Durations of 2–13 seconds observed at 4–14% spreads — far more executable than in-game
+- Platforms can disagree significantly on win probability (14% spread observed on ATL@WSH)
+- **May be the better execution target** — liquid AND long enough windows to fill both legs
+- Need more data to confirm this holds broadly
 
 **In-game arbs (observed during BAL/KC, TOR/LAA, OAK/SEA):**
 - High OI + vol_24h (400k–1M+ contracts). Real, liquid markets.
-- Spreads emerged and disappeared within one or two 10s poll cycles
-- **Speed is critical** — these close fast as markets reprice in real time
-- Best candidates for eventual execution layer
+- Windows typically 17ms–856ms — requires sub-100ms execution infrastructure
+- Large spreads close fastest (7%+ often <100ms) — high profit but low fill probability
 
-**Implication:** In-game arbs are the primary target. Pre-game arbs are interesting for data but require caution on price reliability.
+**Implication:** Target arbs by executability, not game phase. The three factors that determine whether an arb is worth attempting:
+1. **Duration** — needs to be long enough for both legs to fill given your network latency. Pre-game same-day arbs often last seconds; in-game arbs often last milliseconds.
+2. **Liquidity** — sufficient book depth on both platforms to fill your order size without slippage. Use Kalshi OI and Polymarket liquidity as proxies.
+3. **Spread size** — wide enough to clear fees (>2.5% gross) but not so wide that it closes before your orders land. Upper cutoff TBD from real fill data.
+
+Days-out pre-game arbs remain unreliable. Same-day pre-game and in-game are both valid targets — prioritize based on which regime offers better duration/liquidity tradeoff at execution time.
 
 **Spread size vs. duration (preliminary — needs more data):**
 
@@ -104,6 +116,26 @@ Expected value framework:
 EV = P(both legs fill) × net_pretax - P(one leg fails) × single-leg fee cost
 ```
 P(fill) is a function of duration. At very high spreads, P(fill) → 0 and EV turns negative despite large net_pretax.
+
+**Failed leg strategy — hold vs. unwind (unresolved, needs real fill data):**
+
+When one leg fills (FOK) and the other cancels, two options:
+
+*Default: unwind the filled leg immediately.*
+- Sell back into the book, lose bid-ask spread (~1-2%)
+- Frees capital immediately
+- Net effect over many attempts: ~neutral (half the time price moved in your favor, half against), minus the fee on the filled leg
+
+*Alternative: hold the filled leg to game resolution.*
+- EV depends on which leg filled:
+  - **Opener leg filled**: you bought at the opener's new fair value → hold ≈ unwind (both lose just the fee)
+  - **Follower leg filled**: you bought the stale/cheap leg below its new fair value → hold has significantly positive EV (e.g., bought at 0.55 when fair value is now 0.70 → expected gain 0.15 - fee)
+- Downside: capital locked for hours, high variance per bet, directional exposure accumulates across simultaneous games
+- We log `opener` in CSV — we know which leg was which at detection time
+
+*Why this matters:* the follower leg in a fast in-game arb is structurally below fair value (that's what creates the arb). Holding it is not a neutral gamble — it's a below-fair-value position. Over enough attempts, this could outperform the unwind strategy in EV despite higher variance per trade.
+
+*Not implemented yet. Needs real execution data to evaluate P(fill) per leg and actual fair-value discounts before committing to either strategy.*
 
 **Confound to control for:** The large-spread, fast-close observations all occurred during a single high-volatility game moment (PIT@TEX late-inning scoring run). Rapid repricing in that context may cause both large spreads AND fast closures simultaneously — meaning game phase, not spread size alone, could be the true driver. Need more data across varied game states before treating spread as a standalone filter signal.
 
@@ -155,5 +187,5 @@ Both WS clients are live and replace REST price polling entirely. REST is used o
 
 - `arb_durations_3.csv` — all arbs ≥ 3% gross (CSV only, no console output)
 - `arb_durations_4.csv` — arbs ≥ 4% gross (console + CSV)
-- Columns: `event, game, sport, gross_spread, net_pretax, first_seen, closed_at, duration_seconds, peak_gross, opener, minutes_to_first_pitch, kalshi_team, poly_team, kalshi_ask, kalshi_bid, poly_ask, poly_bid, kalshi_oi, kalshi_vol_24h, poly_liquidity, game_datetime`
+- Columns: `event, game, sport, gross_spread, net_pretax, first_seen, closed_at, duration_seconds, peak_gross, opener, minutes_to_first_pitch, kalshi_team, kalshi_side, poly_team, kalshi_ask, kalshi_bid, poly_ask, poly_bid, kalshi_oi, kalshi_vol_24h, poly_liquidity, game_datetime`
 - Both files gitignored.

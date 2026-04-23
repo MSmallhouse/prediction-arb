@@ -13,12 +13,9 @@ PRICE_POLL_INTERVAL = timedelta(seconds=10)  # refresh prices
 # Kalshi taker: 0.07 * P * (1 - P)  per contract
 KALSHI_FEE_COEFF = 0.07
 
-# Polymarket sports taker: 0.03 * P^2 * (1 - P)  per share
-# NOTE: Polymarket CLOB v2 launched 2026-04-28. Fee formula changed to
-# C × feeRate × p × (1-p) with dynamic C and feeRate per market via getClobMarketInfo().
-# This formula differs in exponent (p not p²) and may have a different rate.
-# Re-verify by calling GET /clob.polymarket.com/markets/<market_id> on a live sports
-# market post-migration and update this constant + arb_detector.poly_fee() accordingly.
+# Polymarket sports taker: 0.03 * P * (1 - P)  per share
+# Verified against Polymarket docs post-CLOB v2 (2026-04-28). Coefficient = 0.03,
+# exponent is p (not p²). Peaks at 0.75% at P=0.5.
 POLY_SPORTS_FEE_COEFF = 0.03
 
 # ── Tax rates (Utah, short-term capital gains assumption) ───────────────────────

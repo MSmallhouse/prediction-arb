@@ -41,8 +41,8 @@ def kalshi_fee(p: float) -> float:
 
 
 def poly_fee(p: float) -> float:
-    """Polymarket sports taker fee per share: 0.03 * P^2 * (1 - P)"""
-    return POLY_SPORTS_FEE_COEFF * p * p * (1 - p)
+    """Polymarket sports taker fee per share: 0.03 * P * (1 - P), peaks 0.75% at P=0.5"""
+    return POLY_SPORTS_FEE_COEFF * p * (1 - p)
 
 
 @dataclass
@@ -50,13 +50,16 @@ class ArbOpportunity:
     game_datetime: datetime
     away_team: str
     home_team: str
-    kalshi_market: KalshiMarket
+    kalshi_market: KalshiMarket      # market for the team we want to win (for OI/vol/key)
     poly_market: PolymarketMarket
     gross_spread: float
     kalshi_fee: float
     poly_fee: float
     net_pretax: float
     net_aftertax: float
+    kalshi_side: str                 # "YES" or "NO" — which side of which Kalshi market to buy
+    kalshi_effective_ask: float      # actual price used (min of YES ask or opposing NO ask)
+    kalshi_order_ticker: str         # market_ticker to place the Kalshi order on
 
     @property
     def game_label(self) -> str:
@@ -65,7 +68,7 @@ class ArbOpportunity:
     def __str__(self) -> str:
         return (
             f"{self.game_label:<35} "
-            f"Kalshi {self.kalshi_market.team} YES={self.kalshi_market.yes_ask:.3f}  "
+            f"Kalshi {self.kalshi_market.team} {self.kalshi_side}={self.kalshi_effective_ask:.3f}  "
             f"Poly {self.poly_market.team} YES={self.poly_market.yes_ask:.3f}  "
             f"spread={self.gross_spread:.1%}  "
             f"net_after_tax={self.net_aftertax:.4f}/contract"
@@ -116,9 +119,11 @@ def find_arbs(
 
         # Arb: buy team_a YES on Kalshi + team_b YES on Polymarket
         #      buy team_b YES on Kalshi + team_a YES on Polymarket
-        for k_market, opposing_team in [
-            (team_a, team_b.team),
-            (team_b, team_a.team),
+        # For each pairing, also check if NO on the opposing Kalshi market is
+        # cheaper than YES on the primary market — same payout, potentially lower cost.
+        for k_market, opp_k_market, opposing_team in [
+            (team_a, team_b, team_b.team),
+            (team_b, team_a, team_a.team),
         ]:
             p_market = poly_by_key.get((poly_slug, opposing_team))
             if p_market is None:
@@ -137,7 +142,18 @@ def find_arbs(
                 )
                 continue
 
-            p1 = k_market.yes_ask
+            # Pick cheaper Kalshi exposure: YES on k_market vs NO on opp_k_market
+            yes_ask = k_market.yes_ask
+            no_ask  = opp_k_market.no_ask
+            if 0 < no_ask < 1 and no_ask < yes_ask:
+                p1             = no_ask
+                kalshi_side    = "NO"
+                kalshi_order_ticker = opp_k_market.market_ticker
+            else:
+                p1             = yes_ask
+                kalshi_side    = "YES"
+                kalshi_order_ticker = k_market.market_ticker
+
             p2 = p_market.yes_ask
 
             if p1 <= 0 or p2 <= 0 or p1 >= 1 or p2 >= 1:
@@ -146,17 +162,11 @@ def find_arbs(
             gross = 1.0 - p1 - p2
             fk = kalshi_fee(p1)
             fp = poly_fee(p2)
-            total_fees = fk + fp
-            net_pre = gross - total_fees
+            net_pre = gross - fk - fp
             net_after = net_pre * AFTER_TAX_MULTIPLIER
 
             if gross < MIN_GROSS_SPREAD:
                 continue
-
-            # Determine away/home from Polymarket slug (away-home order)
-            slug_parts = p_market.event_slug.split("-")  # mlb-{away}-{home}-YYYY-MM-DD
-            away_abbr = slug_parts[1] if len(slug_parts) > 2 else "?"
-            home_abbr = slug_parts[2] if len(slug_parts) > 2 else "?"
 
             opp = ArbOpportunity(
                 game_datetime=k_market.game_datetime,
@@ -169,6 +179,9 @@ def find_arbs(
                 poly_fee=fp,
                 net_pretax=net_pre,
                 net_aftertax=net_after,
+                kalshi_side=kalshi_side,
+                kalshi_effective_ask=p1,
+                kalshi_order_ticker=kalshi_order_ticker,
             )
             opps.append(opp)
 
