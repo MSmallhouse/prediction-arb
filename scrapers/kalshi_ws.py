@@ -13,7 +13,7 @@ import base64
 import json
 import logging
 import time
-from typing import Awaitable, Callable
+from typing import Awaitable, Callable, Optional
 
 from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed
@@ -65,7 +65,7 @@ class KalshiWSClient:
         self,
         api_key_id: str,
         private_key_pem: str,
-        on_price_update: Callable[[str, float, float], Awaitable[None]],
+        on_price_update: Callable[[str, float, Optional[float]], Awaitable[None]],
     ) -> None:
         self._api_key_id = api_key_id
         self._private_key_pem = private_key_pem
@@ -153,18 +153,16 @@ class KalshiWSClient:
         except (ValueError, TypeError):
             return
 
-        def _safe_float(val) -> float:
+        raw_bid = data.get("yes_bid_dollars")
+        bid: Optional[float] = None
+        if raw_bid is not None:
             try:
-                return float(val) if val is not None else 0.0
+                bid = float(raw_bid)
             except (ValueError, TypeError):
-                return 0.0
-
-        bid    = _safe_float(data.get("yes_bid_dollars"))
-        no_ask = _safe_float(data.get("no_ask_dollars"))
-        no_bid = _safe_float(data.get("no_bid_dollars"))
+                pass
 
         if 0.0 < ask < 1.0:
-            await self._on_price_update(ticker, ask, bid, no_ask, no_bid)
+            await self._on_price_update(ticker, ask, bid)
 
 
 if __name__ == "__main__":

@@ -100,8 +100,12 @@ class PolymarketWSClient:
 
         event_type values we care about:
           "book"        — initial orderbook snapshot on subscribe; extract min(asks), max(bids)
-          "price_change"— single price update; carries "price" field (no bid)
           "best_bid_ask"— carries explicit "best_ask" and "best_bid" fields
+
+        "price_change" is intentionally ignored. Its "price" field is the last TRADE price,
+        not the current best ask. On WS reconnect Polymarket replays buffered price_change
+        events, which can overwrite a correct "book" snapshot with a stale trade price and
+        create phantom arbs. best_bid_ask fires on every order-book change and is sufficient.
         """
         events = msg if isinstance(msg, list) else [msg]
         for event in events:
@@ -116,6 +120,9 @@ class PolymarketWSClient:
             if etype == "book":
                 asks = event.get("asks", [])
                 if not asks:
+                    # Empty book: no ask orders. Set to 1.0 so this market
+                    # can't form a profitable arb until orders come back.
+                    await self._on_price_update(asset_id, 1.0, 0.0)
                     continue
                 try:
                     ask = min(float(a["price"]) for a in asks)
@@ -141,14 +148,6 @@ class PolymarketWSClient:
                         bid = float(raw_bid)
                     except (ValueError, TypeError):
                         bid = 0.0
-            elif etype == "price_change":
-                raw_ask = event.get("price")
-                if raw_ask is None:
-                    continue
-                try:
-                    ask = float(raw_ask)
-                except (ValueError, TypeError):
-                    continue
             else:
                 continue
 

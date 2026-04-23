@@ -41,8 +41,6 @@ class KalshiMarket:
     yes_bid: float               # best bid
     last_price: float            # last traded price
     status: str
-    no_ask: float = 0.0          # cost to buy NO (= opposing team wins)
-    no_bid: float = 0.0          # best NO bid
     volume: float = 0.0          # total contracts traded
     volume_24h: float = 0.0      # contracts traded last 24h
     open_interest: float = 0.0   # open contracts
@@ -109,8 +107,6 @@ def _parse_event(event: dict) -> list[KalshiMarket]:
             game_datetime=game_dt,
             yes_ask=float(m.get("yes_ask_dollars", 0)),
             yes_bid=float(m.get("yes_bid_dollars", 0)),
-            no_ask=float(m.get("no_ask_dollars", 0)),
-            no_bid=float(m.get("no_bid_dollars", 0)),
             last_price=float(m.get("last_price_dollars", 0)),
             status=m.get("status", ""),
             volume=float(m.get("volume_fp", 0)),

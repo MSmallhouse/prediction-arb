@@ -6,8 +6,7 @@ KALSHI_MLB_SERIES = "KXMLBGAME"
 KALSHI_NBA_SERIES = "KXNBAGAME"
 
 # ── Poll intervals ──────────────────────────────────────────────────────────────
-DISCOVERY_INTERVAL = timedelta(minutes=60)   # re-discover new markets
-PRICE_POLL_INTERVAL = timedelta(seconds=10)  # refresh prices
+DISCOVERY_INTERVAL = timedelta(minutes=60)   # re-discover new markets hourly
 
 # ── Fee formulas ────────────────────────────────────────────────────────────────
 # Kalshi taker: 0.07 * P * (1 - P)  per contract
@@ -26,7 +25,6 @@ AFTER_TAX_MULTIPLIER = 1.0 - COMBINED_TAX_RATE          # 0.7145
 
 # ── Arb thresholds ──────────────────────────────────────────────────────────────
 MIN_GROSS_SPREAD = 0.03        # 3% minimum gross spread to flag as opportunity
-LOG_GROSS_THRESHOLD = 0.02     # 2% minimum gross spread to write to spread_log.csv
 
 # ── Team name normalization ─────────────────────────────────────────────────────
 # Maps Kalshi yes_sub_title (city/city+suffix format) → canonical team name.

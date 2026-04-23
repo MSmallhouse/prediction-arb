@@ -3,36 +3,25 @@ Cross-market arbitrage detector.
 
 Pairs Kalshi and Polymarket markets for the same game, computes gross spread,
 fees, and after-tax net profit. Logs opportunities above MIN_GROSS_SPREAD.
+
+Kalshi side: YES only. Each game has 2 Kalshi markets (one per team), each
+with a YES order book. We buy YES on Team A (Kalshi) + YES on Team B (Poly).
 """
 
-import csv
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from pathlib import Path
+from datetime import datetime
 
 from config import (
     KALSHI_FEE_COEFF,
     POLY_SPORTS_FEE_COEFF,
     AFTER_TAX_MULTIPLIER,
     MIN_GROSS_SPREAD,
-    LOG_GROSS_THRESHOLD,
 )
 from scrapers.kalshi import KalshiMarket
 from scrapers.polymarket import PolymarketMarket, kalshi_ticker_to_poly_slug
 
 log = logging.getLogger(__name__)
-
-LOG_FILE = Path("arb_opportunities.csv")
-_FIELDNAMES = [
-    "timestamp", "sport", "game_datetime", "home_team", "away_team",
-    "kalshi_team", "kalshi_ask",
-    "poly_team", "poly_ask",
-    "gross_spread", "kalshi_fee", "poly_fee", "total_fees",
-    "net_pretax", "net_aftertax", "profitable",
-    "kalshi_ticker", "poly_slug",
-    "kalshi_open_interest", "kalshi_volume_24h", "poly_liquidity",
-]
 
 
 def kalshi_fee(p: float) -> float:
@@ -47,19 +36,18 @@ def poly_fee(p: float) -> float:
 
 @dataclass
 class ArbOpportunity:
-    game_datetime: datetime
+    game_datetime: datetime          # actual game start from Polymarket (not Kalshi expiry)
     away_team: str
     home_team: str
-    kalshi_market: KalshiMarket      # market for the team we want to win (for OI/vol/key)
-    poly_market: PolymarketMarket
+    kalshi_market: KalshiMarket      # Kalshi market we buy YES on
+    poly_market: PolymarketMarket    # Poly market we buy YES on (opposing team)
     gross_spread: float
     kalshi_fee: float
     poly_fee: float
     net_pretax: float
     net_aftertax: float
-    kalshi_side: str                 # "YES" or "NO" — which side of which Kalshi market to buy
-    kalshi_effective_ask: float      # actual price used (min of YES ask or opposing NO ask)
-    kalshi_order_ticker: str         # market_ticker to place the Kalshi order on
+    kalshi_ask: float                # Kalshi YES ask price used
+    kalshi_price_ts: datetime        # fetched_at of the Kalshi market
 
     @property
     def game_label(self) -> str:
@@ -68,7 +56,7 @@ class ArbOpportunity:
     def __str__(self) -> str:
         return (
             f"{self.game_label:<35} "
-            f"Kalshi {self.kalshi_market.team} {self.kalshi_side}={self.kalshi_effective_ask:.3f}  "
+            f"Kalshi {self.kalshi_market.team} YES={self.kalshi_ask:.3f}  "
             f"Poly {self.poly_market.team} YES={self.poly_market.yes_ask:.3f}  "
             f"spread={self.gross_spread:.1%}  "
             f"net_after_tax={self.net_aftertax:.4f}/contract"
@@ -84,9 +72,6 @@ def find_arbs(
 
     Matching strategy: derive Polymarket slug from Kalshi event_ticker
     (same derivation used during discovery), then look up by (slug, team).
-    This avoids UTC date collisions where two same-team games fall on the
-    same UTC calendar date (e.g. 7:40 PM ET game and 2:20 PM CT next-day game
-    both appear as date 2026-04-23 UTC).
 
     Arb logic:
       Buy YES(Team A) on Kalshi at P1_ask
@@ -110,28 +95,24 @@ def find_arbs(
         if len(k_markets) != 2:
             continue
 
-        # Derive the Polymarket slug for this specific Kalshi event
         poly_slug = kalshi_ticker_to_poly_slug(event_ticker)
         if poly_slug is None:
             continue
 
         team_a, team_b = k_markets[0], k_markets[1]
 
-        # Arb: buy team_a YES on Kalshi + team_b YES on Polymarket
-        #      buy team_b YES on Kalshi + team_a YES on Polymarket
-        # For each pairing, also check if NO on the opposing Kalshi market is
-        # cheaper than YES on the primary market — same payout, potentially lower cost.
-        for k_market, opp_k_market, opposing_team in [
-            (team_a, team_b, team_b.team),
-            (team_b, team_a, team_a.team),
+        # Two arb directions:
+        #   Buy team_a YES on Kalshi + team_b YES on Polymarket
+        #   Buy team_b YES on Kalshi + team_a YES on Polymarket
+        for k_market, opposing_team in [
+            (team_a, team_b.team),
+            (team_b, team_a.team),
         ]:
             p_market = poly_by_key.get((poly_slug, opposing_team))
             if p_market is None:
                 continue
 
-            # Reject if game datetimes differ by more than 12h — guards against
-            # a Kalshi ticker date-deriving the wrong Polymarket game in a series
-            # (e.g. late-night ET game slug matching next-day UTC-dated Poly game).
+            # Reject if game datetimes differ by more than 12h
             dt_diff = abs((k_market.game_datetime - p_market.game_datetime).total_seconds())
             if dt_diff > 12 * 3600:
                 log.debug(
@@ -142,18 +123,7 @@ def find_arbs(
                 )
                 continue
 
-            # Pick cheaper Kalshi exposure: YES on k_market vs NO on opp_k_market
-            yes_ask = k_market.yes_ask
-            no_ask  = opp_k_market.no_ask
-            if 0 < no_ask < 1 and no_ask < yes_ask:
-                p1             = no_ask
-                kalshi_side    = "NO"
-                kalshi_order_ticker = opp_k_market.market_ticker
-            else:
-                p1             = yes_ask
-                kalshi_side    = "YES"
-                kalshi_order_ticker = k_market.market_ticker
-
+            p1 = k_market.yes_ask
             p2 = p_market.yes_ask
 
             if p1 <= 0 or p2 <= 0 or p1 >= 1 or p2 >= 1:
@@ -169,7 +139,7 @@ def find_arbs(
                 continue
 
             opp = ArbOpportunity(
-                game_datetime=k_market.game_datetime,
+                game_datetime=p_market.game_datetime,
                 away_team=p_market.event_slug.split("-")[1].upper(),
                 home_team=p_market.event_slug.split("-")[2].upper(),
                 kalshi_market=k_market,
@@ -179,63 +149,10 @@ def find_arbs(
                 poly_fee=fp,
                 net_pretax=net_pre,
                 net_aftertax=net_after,
-                kalshi_side=kalshi_side,
-                kalshi_effective_ask=p1,
-                kalshi_order_ticker=kalshi_order_ticker,
+                kalshi_ask=p1,
+                kalshi_price_ts=k_market.fetched_at,
             )
             opps.append(opp)
 
-    # Sort by gross spread descending
     opps.sort(key=lambda o: o.gross_spread, reverse=True)
     return opps
-
-
-def log_arbs(opps: list[ArbOpportunity]) -> int:
-    """
-    Append all opportunities >= LOG_GROSS_THRESHOLD to arb_opportunities.csv.
-    Includes a `profitable` column (true when net_pretax > 0).
-    Returns count of rows written.
-    """
-    loggable = [o for o in opps if o.gross_spread >= LOG_GROSS_THRESHOLD]
-    if not loggable:
-        return 0
-
-    ts = datetime.now(timezone.utc).isoformat()
-    write_header = not LOG_FILE.exists()
-
-    with LOG_FILE.open("a", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=_FIELDNAMES)
-        if write_header:
-            writer.writeheader()
-
-        for opp in loggable:
-            sport = "NBA" if opp.kalshi_market.event_ticker.startswith("KXNBA") else "MLB"
-            profitable = opp.net_pretax > 0
-            if profitable:
-                log.info("ARB: %s", opp)
-            writer.writerow({
-                "timestamp": ts,
-                "sport": sport,
-                "game_datetime": opp.game_datetime.isoformat(),
-                "home_team": opp.home_team,
-                "away_team": opp.away_team,
-                "kalshi_team": opp.kalshi_market.team,
-                "kalshi_ask": f"{opp.kalshi_market.yes_ask:.4f}",
-                "poly_team": opp.poly_market.team,
-                "poly_ask": f"{opp.poly_market.yes_ask:.4f}",
-                "gross_spread": f"{opp.gross_spread:.4f}",
-                "kalshi_fee": f"{opp.kalshi_fee:.4f}",
-                "poly_fee": f"{opp.poly_fee:.4f}",
-                "total_fees": f"{opp.kalshi_fee + opp.poly_fee:.4f}",
-                "net_pretax": f"{opp.net_pretax:.4f}",
-                "net_aftertax": f"{opp.net_aftertax:.4f}",
-                "profitable": profitable,
-                "kalshi_ticker": opp.kalshi_market.market_ticker,
-                "poly_slug": opp.poly_market.event_slug,
-                "kalshi_open_interest": f"{opp.kalshi_market.open_interest:.0f}",
-                "kalshi_volume_24h": f"{opp.kalshi_market.volume_24h:.0f}",
-                "poly_liquidity": f"{opp.poly_market.liquidity:.0f}",
-            })
-
-    return len(loggable)
-

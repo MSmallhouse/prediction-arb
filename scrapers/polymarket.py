@@ -16,6 +16,7 @@ Polymarket game winner market identification:
 """
 
 import asyncio
+import json
 import logging
 import re
 from dataclasses import dataclass, field
@@ -306,9 +307,9 @@ async def discover_and_fetch(
             return []
 
         try:
-            outcomes = eval(market.get("outcomes", "[]"))       # JSON string
-            token_ids = eval(market.get("clobTokenIds", "[]"))  # JSON string
-            outcome_prices = eval(market.get("outcomePrices", "[]"))
+            outcomes = json.loads(market.get("outcomes", "[]"))
+            token_ids = json.loads(market.get("clobTokenIds", "[]"))
+            outcome_prices = json.loads(market.get("outcomePrices", "[]"))
         except Exception as exc:
             log.error("Failed to parse market fields for %s: %s", slug, exc)
             return []
@@ -331,8 +332,8 @@ async def discover_and_fetch(
             if team is None:
                 continue
 
-            # Use outcomePrices from Gamma — equal to CLOB side=sell ask,
-            # no extra round-trip needed.
+            # Gamma outcomePrices = displayed probability (midpoint), NOT real CLOB ask.
+            # Used as a seed price only; caller should CLOB-refresh before arb detection.
             yes_ask = float(op_str)
 
             markets_out.append(PolymarketMarket(
