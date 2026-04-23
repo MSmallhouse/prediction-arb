@@ -14,7 +14,6 @@ import os
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional
 
 import aiohttp
 from dotenv import load_dotenv
@@ -89,10 +88,10 @@ async def _verify_and_log(t, opp) -> None:
         t.verified = "real"
         log.info(
             "\n\n  VERIFIED REAL  %s  gross=%.1f%%\n"
-            "    REST: K: %s %dc   P: %s %dc\n"
+            "    REST: K: %s %s %dc   P: %s %dc\n"
             "    WS:   K: %dc   P: %dc\n",
             opp.game_label, v.rest_gross * 100,
-            opp.kalshi_market.team,
+            opp.kalshi_order_market.team, opp.kalshi_side,
             round(v.rest_kalshi_price * 100),
             opp.poly_market.team,
             round(v.rest_poly_price * 100),
@@ -103,10 +102,10 @@ async def _verify_and_log(t, opp) -> None:
         t.verified = "phantom"
         log.warning(
             "\n\n  PHANTOM  %s  ws_gross=%.1f%%  rest_gross=%.1f%%\n"
-            "    REST: K: %s %dc   P: %s %dc\n"
+            "    REST: K: %s %s %dc   P: %s %dc\n"
             "    WS:   K: %dc   P: %dc\n",
             opp.game_label, v.ws_gross * 100, v.rest_gross * 100,
-            opp.kalshi_market.team,
+            opp.kalshi_order_market.team, opp.kalshi_side,
             round(v.rest_kalshi_price * 100),
             opp.poly_market.team,
             round(v.rest_poly_price * 100),
@@ -144,7 +143,7 @@ async def _check_arbs() -> None:
 
     # Single find_arbs call at 3% threshold (config.MIN_GROSS_SPREAD = 0.03)
     arbs_3 = find_arbs(kalshi_live, poly_live)
-    arbs_4 = [o for o in arbs_3 if o.gross_spread >= THRESHOLD_4]
+    arbs_4 = [o for o in arbs_3 if o.gross_spread >= THRESHOLD_4 - 1e-9]
 
     # Log best spread only when it changes — arbs_3 is already sorted descending,
     # so arbs_3[0] is the best. No second find_arbs() call needed.
@@ -154,8 +153,8 @@ async def _check_arbs() -> None:
         if abs(best.gross_spread - _last_logged_spread) >= 0.001:
             opp = best
             log.info(
-                "\n\n  prices: K: %s %dc   P: %s %dc   gross=%.1f%%\n",
-                opp.kalshi_market.team,
+                "\n\n  prices: K: %s %s %dc   P: %s %dc   gross=%.1f%%\n",
+                opp.kalshi_order_market.team, opp.kalshi_side,
                 round(opp.kalshi_ask * 100),
                 opp.poly_market.team,
                 round(opp.poly_market.yes_ask * 100),
@@ -180,7 +179,7 @@ async def _check_arbs() -> None:
         print(
             f"[{ts}] ARB OPENED  {opp.game_label:<28} "
             f"gross={opp.gross_spread:.1%}  net={opp.net_pretax:.2%}  "
-            f"K:{opp.kalshi_market.team}@{opp.kalshi_ask:.3f}  "
+            f"K:{opp.kalshi_order_market.team} {opp.kalshi_side}@{opp.kalshi_ask:.3f}  "
             f"P:{opp.poly_market.team}@{opp.poly_market.yes_ask:.3f}"
         )
         log_arb_duration(t, "OPEN", LOG_FILE_4)
@@ -207,8 +206,12 @@ async def _check_arbs() -> None:
 
 async def _on_kalshi_price(
     market_ticker: str,
-    new_ask: float,
-    new_bid: Optional[float],
+    yes_ask: float,
+    yes_bid: float,
+    no_ask: float,
+    no_bid: float,
+    yes_ask_size: float,
+    no_ask_size: float,
 ) -> None:
     global _last_tick
     market = kalshi_by_ticker.get(market_ticker)
@@ -216,9 +219,12 @@ async def _on_kalshi_price(
         log.debug("Kalshi tick for unknown ticker %s — ignoring", market_ticker)
         return
     _kalshi_ws_confirmed.add(market_ticker)
-    market.yes_ask = new_ask
-    if new_bid is not None and new_bid > 0:
-        market.yes_bid = new_bid
+    market.yes_ask = yes_ask
+    market.yes_bid = yes_bid
+    market.no_ask = no_ask
+    market.no_bid = no_bid
+    market.yes_ask_size = yes_ask_size
+    market.no_ask_size = no_ask_size
     market.fetched_at = datetime.now(timezone.utc)
     _last_tick = market.fetched_at
     await _check_arbs()
@@ -260,6 +266,10 @@ def _populate_stores(
         if existing is not None:
             m.yes_ask = existing.yes_ask
             m.yes_bid = existing.yes_bid
+            m.no_ask = existing.no_ask
+            m.no_bid = existing.no_bid
+            m.yes_ask_size = existing.yes_ask_size
+            m.no_ask_size = existing.no_ask_size
         kalshi_by_ticker[m.market_ticker] = m
 
     for m in poly_markets:

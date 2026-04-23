@@ -32,9 +32,10 @@ _FIELDNAMES = [
     "opener",                # which platform repriced first: "kalshi" or "poly"
     "minutes_to_first_pitch", # minutes until game start at first_seen (negative = in-game)
     "kalshi_team",
+    "kalshi_side",           # "YES" or "NO" — which Kalshi order book we buy
     "poly_team",
-    "kalshi_ask",            # YES ask on Kalshi
-    "kalshi_bid",            # YES bid on Kalshi
+    "kalshi_ask",            # effective ask (YES ask or opposing NO ask)
+    "kalshi_bid",            # bid for our position (YES bid or NO bid)
     "poly_ask",              # YES ask on Polymarket
     "poly_bid",              # YES bid on Polymarket (0 if not yet received from WS)
     "kalshi_oi",             # Kalshi open interest at first_seen
@@ -45,6 +46,7 @@ _FIELDNAMES = [
     "rest_kalshi_ask",       # REST-verified Kalshi ask (empty if not checked)
     "rest_poly_ask",         # REST-verified Poly ask (empty if not checked)
     "rest_gross",            # gross spread from REST prices (empty if not checked)
+    "kalshi_depth",          # contracts available at the Kalshi best ask we'd trade
 ]
 
 # Unique key per directional arb: (event_slug, kalshi_market_ticker, poly_token_id)
@@ -173,17 +175,19 @@ def log_arb_duration(tracked: TrackedArb, event: str, filepath: Path = DURATION_
             "opener": tracked.opener,
             "minutes_to_first_pitch": f"{mins_to_pitch:.1f}",
             "kalshi_team": opp.kalshi_market.team,
+            "kalshi_side": opp.kalshi_side,
             "poly_team": opp.poly_market.team,
             "kalshi_ask": f"{opp.kalshi_ask:.4f}",
-            "kalshi_bid": f"{opp.kalshi_market.yes_bid:.4f}",
+            "kalshi_bid": f"{opp.kalshi_order_market.yes_bid if opp.kalshi_side == 'YES' else opp.kalshi_order_market.no_bid:.4f}",
             "poly_ask": f"{opp.poly_market.yes_ask:.4f}",
             "poly_bid": f"{opp.poly_market.yes_bid:.4f}",
-            "kalshi_oi": f"{opp.kalshi_market.open_interest:.0f}",
-            "kalshi_vol_24h": f"{opp.kalshi_market.volume_24h:.0f}",
+            "kalshi_oi": f"{opp.kalshi_order_market.open_interest:.0f}",
+            "kalshi_vol_24h": f"{opp.kalshi_order_market.volume_24h:.0f}",
             "poly_liquidity": f"{opp.poly_market.liquidity:.0f}",
             "game_datetime": opp.game_datetime.isoformat(),
             "verified": tracked.verified,
             "rest_kalshi_ask": f"{tracked.rest_kalshi_ask:.4f}" if tracked.verified else "",
             "rest_poly_ask": f"{tracked.rest_poly_ask:.4f}" if tracked.verified else "",
             "rest_gross": f"{tracked.rest_gross:.4f}" if tracked.verified else "",
+            "kalshi_depth": f"{opp.kalshi_order_market.yes_ask_size if opp.kalshi_side == 'YES' else opp.kalshi_order_market.no_ask_size:.0f}",
         })

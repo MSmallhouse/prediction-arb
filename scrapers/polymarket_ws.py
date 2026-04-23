@@ -69,6 +69,7 @@ class PolymarketWSClient:
                 await ws.send(json.dumps({
                     "assets_ids": list(self._subscribed),
                     "type": "market",
+                    "custom_feature_enabled": True,
                 }))
             await asyncio.gather(
                 self._heartbeat_loop(ws),
@@ -99,13 +100,13 @@ class PolymarketWSClient:
         Handle a single event dict or a list of events.
 
         event_type values we care about:
-          "book"        — initial orderbook snapshot on subscribe; extract min(asks), max(bids)
-          "best_bid_ask"— carries explicit "best_ask" and "best_bid" fields
+          "book"         — full orderbook snapshot on subscribe
+          "price_change" — order book delta (order placed/cancelled); carries best_ask/best_bid
+                           Fastest event for price detection. "price" field = affected level,
+                           "best_ask"/"best_bid" = current best prices after the change.
+          "best_bid_ask" — explicit best price update (requires custom_feature_enabled)
 
-        "price_change" is intentionally ignored. Its "price" field is the last TRADE price,
-        not the current best ask. On WS reconnect Polymarket replays buffered price_change
-        events, which can overwrite a correct "book" snapshot with a stale trade price and
-        create phantom arbs. best_bid_ask fires on every order-book change and is sufficient.
+        "last_trade_price" is ignored — that's the actual trade execution event.
         """
         events = msg if isinstance(msg, list) else [msg]
         for event in events:
@@ -134,7 +135,7 @@ class PolymarketWSClient:
                         bid = max(float(b["price"]) for b in bids)
                     except (KeyError, ValueError, TypeError):
                         bid = 0.0
-            elif etype == "best_bid_ask":
+            elif etype in ("price_change", "best_bid_ask"):
                 raw_ask = event.get("best_ask")
                 if raw_ask is None:
                     continue

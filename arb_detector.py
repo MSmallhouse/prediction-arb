@@ -4,8 +4,9 @@ Cross-market arbitrage detector.
 Pairs Kalshi and Polymarket markets for the same game, computes gross spread,
 fees, and after-tax net profit. Logs opportunities above MIN_GROSS_SPREAD.
 
-Kalshi side: YES only. Each game has 2 Kalshi markets (one per team), each
-with a YES order book. We buy YES on Team A (Kalshi) + YES on Team B (Poly).
+Kalshi has 4 order books per game: Team A YES/NO, Team B YES/NO.
+Buying YES on Team A and buying NO on Team B have the same payout ($1 if A wins).
+We pick whichever is cheaper. NO prices come from the orderbook_delta WS channel.
 """
 
 import logging
@@ -39,15 +40,17 @@ class ArbOpportunity:
     game_datetime: datetime          # actual game start from Polymarket (not Kalshi expiry)
     away_team: str
     home_team: str
-    kalshi_market: KalshiMarket      # Kalshi market we buy YES on
+    kalshi_market: KalshiMarket      # k_market: reference market for arb key direction
     poly_market: PolymarketMarket    # Poly market we buy YES on (opposing team)
     gross_spread: float
     kalshi_fee: float
     poly_fee: float
     net_pretax: float
     net_aftertax: float
-    kalshi_ask: float                # Kalshi YES ask price used
-    kalshi_price_ts: datetime        # fetched_at of the Kalshi market
+    kalshi_side: str                 # "YES" or "NO" — which Kalshi order book we buy
+    kalshi_ask: float                # effective ask (YES ask or opposing NO ask, whichever cheaper)
+    kalshi_order_market: KalshiMarket  # market we place the order on (opp_k for NO, k for YES)
+    kalshi_price_ts: datetime        # fetched_at of the market whose price created this arb
 
     @property
     def game_label(self) -> str:
@@ -56,7 +59,7 @@ class ArbOpportunity:
     def __str__(self) -> str:
         return (
             f"{self.game_label:<35} "
-            f"Kalshi {self.kalshi_market.team} YES={self.kalshi_ask:.3f}  "
+            f"Kalshi {self.kalshi_order_market.team} {self.kalshi_side}={self.kalshi_ask:.3f}  "
             f"Poly {self.poly_market.team} YES={self.poly_market.yes_ask:.3f}  "
             f"spread={self.gross_spread:.1%}  "
             f"net_after_tax={self.net_aftertax:.4f}/contract"
@@ -70,14 +73,12 @@ def find_arbs(
     """
     Match Kalshi and Polymarket markets for the same game, then check arb.
 
-    Matching strategy: derive Polymarket slug from Kalshi event_ticker
-    (same derivation used during discovery), then look up by (slug, team).
-
     Arb logic:
-      Buy YES(Team A) on Kalshi at P1_ask
-      Buy YES(Team B) on Polymarket at P2_ask
+      To express "Team A wins" on Kalshi, pick cheaper of:
+        - Buy YES on Team A market (yes_ask)
+        - Buy NO on Team B market (no_ask) — same payout
+      Then pair with "Team B wins" on Polymarket (YES ask).
       One side always pays $1 → gross spread S = 1 - P1 - P2
-      Profitable when S > total_fees (before tax)
     """
     # Index Polymarket markets by (event_slug, canonical_team)
     poly_by_key: dict[tuple[str, str], PolymarketMarket] = {}
@@ -101,12 +102,10 @@ def find_arbs(
 
         team_a, team_b = k_markets[0], k_markets[1]
 
-        # Two arb directions:
-        #   Buy team_a YES on Kalshi + team_b YES on Polymarket
-        #   Buy team_b YES on Kalshi + team_a YES on Polymarket
-        for k_market, opposing_team in [
-            (team_a, team_b.team),
-            (team_b, team_a.team),
+        # Two arb directions, each checking YES vs opposing NO:
+        for k_market, opp_k_market, opposing_team in [
+            (team_a, team_b, team_b.team),
+            (team_b, team_a, team_a.team),
         ]:
             p_market = poly_by_key.get((poly_slug, opposing_team))
             if p_market is None:
@@ -116,14 +115,25 @@ def find_arbs(
             dt_diff = abs((k_market.game_datetime - p_market.game_datetime).total_seconds())
             if dt_diff > 12 * 3600:
                 log.debug(
-                    "Skipping %s/%s: datetime mismatch Kalshi=%s Poly=%s (diff %.1fh)",
-                    k_market.team, p_market.team,
-                    k_market.game_datetime.isoformat(), p_market.game_datetime.isoformat(),
-                    dt_diff / 3600,
+                    "Skipping %s/%s: datetime mismatch (diff %.1fh)",
+                    k_market.team, p_market.team, dt_diff / 3600,
                 )
                 continue
 
-            p1 = k_market.yes_ask
+            # Pick cheaper Kalshi exposure: YES on k_market vs NO on opp_k_market
+            yes_ask = k_market.yes_ask
+            no_ask = opp_k_market.no_ask
+            if 0 < no_ask < 1 and no_ask < yes_ask:
+                p1 = no_ask
+                kalshi_side = "NO"
+                kalshi_order_market = opp_k_market
+                kalshi_price_ts = opp_k_market.fetched_at
+            else:
+                p1 = yes_ask
+                kalshi_side = "YES"
+                kalshi_order_market = k_market
+                kalshi_price_ts = k_market.fetched_at
+
             p2 = p_market.yes_ask
 
             if p1 <= 0 or p2 <= 0 or p1 >= 1 or p2 >= 1:
@@ -135,7 +145,7 @@ def find_arbs(
             net_pre = gross - fk - fp
             net_after = net_pre * AFTER_TAX_MULTIPLIER
 
-            if gross < MIN_GROSS_SPREAD:
+            if gross < MIN_GROSS_SPREAD - 1e-9:
                 continue
 
             opp = ArbOpportunity(
@@ -149,8 +159,10 @@ def find_arbs(
                 poly_fee=fp,
                 net_pretax=net_pre,
                 net_aftertax=net_after,
+                kalshi_side=kalshi_side,
                 kalshi_ask=p1,
-                kalshi_price_ts=k_market.fetched_at,
+                kalshi_order_market=kalshi_order_market,
+                kalshi_price_ts=kalshi_price_ts,
             )
             opps.append(opp)
 

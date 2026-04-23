@@ -1,11 +1,21 @@
 """
-Kalshi WebSocket client.
+Kalshi WebSocket client — orderbook_delta channel.
 
-Subscribes to the ticker channel per market_ticker. Fires on_price_update(market_ticker, ask)
-on every ticker event. Auth required (RSA-PSS) even for public data.
+Maintains local order books per market from snapshots + deltas.
+Fires callback with YES and NO best prices on every book change.
 
-Heartbeat: server sends WS-protocol Ping frames; websockets auto-responds with Pong.
-No application-level heartbeat needed.
+Auth required (RSA-PSS). Server sends WS Ping frames; websockets auto-responds.
+
+Kalshi book model:
+  yes_levels[price] = resting YES buy orders (bids) at that price
+  no_levels[price]  = resting NO buy orders (bids) at that price
+
+  yes_ask = 1 - max(no_levels)   (to buy YES, match with highest NO bidder)
+  yes_bid = max(yes_levels)       (best resting YES bid)
+  no_ask  = 1 - max(yes_levels)  (to buy NO, match with highest YES bidder)
+  no_bid  = max(no_levels)        (best resting NO bid)
+
+Seq gap detection: if delta.seq != expected, re-subscribe for fresh snapshot.
 """
 
 import asyncio
@@ -36,10 +46,6 @@ def _next_id() -> int:
 
 
 def _build_auth_headers(api_key_id: str, private_key_pem: str) -> dict[str, str]:
-    """
-    RSA-PSS signature over f"{timestamp_ms}GET{path}".
-    timestamp_ms is milliseconds since epoch as a decimal string.
-    """
     pem = private_key_pem.replace("\\n", "\n")
     ts_ms = str(int(time.time() * 1000))
     message = f"{ts_ms}GET{KALSHI_WS_PATH}".encode()
@@ -60,23 +66,120 @@ def _build_auth_headers(api_key_id: str, private_key_pem: str) -> dict[str, str]
     }
 
 
+class _MarketBook:
+    """Local order book for one market, derived from snapshot + deltas."""
+
+    __slots__ = ("yes_levels", "no_levels", "_yes_ask", "_yes_bid", "_no_ask", "_no_bid")
+
+    def __init__(self) -> None:
+        self.yes_levels: dict[float, float] = {}  # price → size (YES bids)
+        self.no_levels: dict[float, float] = {}   # price → size (NO bids)
+        self._yes_ask = 1.0
+        self._yes_bid = 0.0
+        self._no_ask = 1.0
+        self._no_bid = 0.0
+
+    def load_snapshot(self, yes_fp: list, no_fp: list) -> None:
+        """Initialize from orderbook_snapshot arrays."""
+        self.yes_levels.clear()
+        self.no_levels.clear()
+        for price_str, size_str in yes_fp:
+            size = float(size_str)
+            if size > 0:
+                self.yes_levels[float(price_str)] = size
+        for price_str, size_str in no_fp:
+            size = float(size_str)
+            if size > 0:
+                self.no_levels[float(price_str)] = size
+        self._recompute()
+
+    def apply_delta(self, side: str, price: float, delta: float) -> bool:
+        """
+        Apply an orderbook_delta. Returns True if best prices changed.
+        """
+        old = (self._yes_ask, self._yes_bid, self._no_ask, self._no_bid)
+        levels = self.yes_levels if side == "yes" else self.no_levels
+        current = levels.get(price, 0.0)
+        new_size = current + delta
+        if new_size > 0.001:  # float tolerance
+            levels[price] = new_size
+        else:
+            levels.pop(price, None)
+        self._recompute()
+        return (self._yes_ask, self._yes_bid, self._no_ask, self._no_bid) != old
+
+    def _recompute(self) -> None:
+        if self.no_levels:
+            max_no = max(self.no_levels)
+            self._yes_ask = round(1.0 - max_no, 4)
+            self._no_bid = max_no
+        else:
+            self._yes_ask = 1.0
+            self._no_bid = 0.0
+        if self.yes_levels:
+            max_yes = max(self.yes_levels)
+            self._yes_bid = max_yes
+            self._no_ask = round(1.0 - max_yes, 4)
+        else:
+            self._yes_bid = 0.0
+            self._no_ask = 1.0
+
+    @property
+    def yes_ask(self) -> float:
+        return self._yes_ask
+
+    @property
+    def yes_bid(self) -> float:
+        return self._yes_bid
+
+    @property
+    def no_ask(self) -> float:
+        return self._no_ask
+
+    @property
+    def no_bid(self) -> float:
+        return self._no_bid
+
+    @property
+    def yes_ask_size(self) -> float:
+        """Contracts available at best YES ask (= size at max NO bid level)."""
+        if not self.no_levels:
+            return 0.0
+        return self.no_levels[max(self.no_levels)]
+
+    @property
+    def no_ask_size(self) -> float:
+        """Contracts available at best NO ask (= size at max YES bid level)."""
+        if not self.yes_levels:
+            return 0.0
+        return self.yes_levels[max(self.yes_levels)]
+
+
 class KalshiWSClient:
     def __init__(
         self,
         api_key_id: str,
         private_key_pem: str,
-        on_price_update: Callable[[str, float, Optional[float]], Awaitable[None]],
+        on_price_update: Callable[[str, float, float, float, float, float, float], Awaitable[None]],
     ) -> None:
+        """
+        on_price_update(market_ticker, yes_ask, yes_bid, no_ask, no_bid, yes_ask_size, no_ask_size)
+        """
         self._api_key_id = api_key_id
         self._private_key_pem = private_key_pem
         self._on_price_update = on_price_update
-        self._subscribed: set[str] = set()  # market_tickers — source of truth for reconnect
+        self._subscribed: set[str] = set()
         self._ws = None
         self._running = False
         self._backoff = 1.0
 
+        # Local order books and seq tracking
+        self._books: dict[str, _MarketBook] = {}    # market_ticker → book
+        self._sid_tickers: dict[int, set[str]] = {} # sid → set of market_tickers
+        self._sid_seq: dict[int, int] = {}           # sid → last seq seen
+        self._ticker_sid: dict[str, int] = {}        # market_ticker → sid
+
     async def start(self, initial_market_tickers: list[str]) -> None:
-        """Run forever; reconnects on drop. Call via asyncio.create_task()."""
         self._running = True
         self._subscribed.update(initial_market_tickers)
         while self._running:
@@ -89,18 +192,16 @@ class KalshiWSClient:
                 self._backoff = min(self._backoff * 2, MAX_BACKOFF)
 
     async def subscribe(self, market_tickers: list[str]) -> None:
-        """Dynamically subscribe new tickers on existing connection."""
         new = [t for t in market_tickers if t not in self._subscribed]
         if not new:
             return
         self._subscribed.update(new)
         if self._ws is not None:
-            for ticker in new:
-                try:
-                    await self._send_subscribe(self._ws, ticker)
-                except ConnectionClosed:
-                    log.warning("Kalshi WS: dynamic subscribe failed (disconnected); will resubscribe on reconnect")
-                    return
+            try:
+                await self._send_subscribe(self._ws, new)
+            except ConnectionClosed:
+                log.warning("Kalshi WS: dynamic subscribe failed (disconnected); will resubscribe on reconnect")
+                return
             log.info("Kalshi WS: dynamically subscribed %d new tickers", len(new))
 
     async def stop(self) -> None:
@@ -109,21 +210,40 @@ class KalshiWSClient:
             await self._ws.close()
 
     async def _connect_and_run(self) -> None:
+        # Clear book state on reconnect — fresh snapshots incoming
+        self._books.clear()
+        self._sid_tickers.clear()
+        self._sid_seq.clear()
+        self._ticker_sid.clear()
+
         headers = _build_auth_headers(self._api_key_id, self._private_key_pem)
         async with connect(KALSHI_WS_URL, additional_headers=headers) as ws:
             self._ws = ws
             log.info("Kalshi WS: connected (%d tickers)", len(self._subscribed))
-            for ticker in self._subscribed:
-                await self._send_subscribe(ws, ticker)
+            if self._subscribed:
+                await self._send_subscribe(ws, list(self._subscribed))
             await self._read_loop(ws)
 
-    async def _send_subscribe(self, ws, market_ticker: str) -> None:
+    async def _send_subscribe(self, ws, market_tickers: list[str]) -> None:
         msg = {
             "id": _next_id(),
             "cmd": "subscribe",
             "params": {
-                "channels": ["ticker"],
-                "market_ticker": market_ticker,
+                "channels": ["orderbook_delta"],
+                "market_tickers": market_tickers,
+            },
+        }
+        await ws.send(json.dumps(msg))
+
+    async def _request_snapshot(self, ws, market_tickers: list[str]) -> None:
+        """Request fresh snapshot after a seq gap."""
+        msg = {
+            "id": _next_id(),
+            "cmd": "update_subscription",
+            "params": {
+                "channels": ["orderbook_delta"],
+                "market_tickers": market_tickers,
+                "action": "get_snapshot",
             },
         }
         await ws.send(json.dumps(msg))
@@ -134,55 +254,108 @@ class KalshiWSClient:
                 msg = json.loads(raw)
             except (json.JSONDecodeError, TypeError):
                 continue
-            await self._dispatch(msg)
+            await self._dispatch(msg, ws)
 
-    async def _dispatch(self, msg: dict) -> None:
-        """
-        Kalshi tick: {"type": "ticker", "msg": {"market_ticker": "...", "yes_ask_dollars": 0.55, ...}}
-        Subscribe ACK: {"type": "subscribed", ...} — ignored.
-        """
-        if msg.get("type") != "ticker":
-            return
+    async def _dispatch(self, msg: dict, ws) -> None:
+        msg_type = msg.get("type")
+
+        if msg_type == "orderbook_snapshot":
+            await self._handle_snapshot(msg)
+
+        elif msg_type == "orderbook_delta":
+            await self._handle_delta(msg, ws)
+
+        # Ignore: "subscribed", "unsubscribed", "error", etc.
+
+    async def _handle_snapshot(self, msg: dict) -> None:
+        sid = msg.get("sid", 0)
+        seq = msg.get("seq", 0)
         data = msg.get("msg", {})
         ticker = data.get("market_ticker")
-        raw_ask = data.get("yes_ask_dollars")
-        if ticker is None or raw_ask is None:
+        if not ticker:
             return
+
+        book = _MarketBook()
+        book.load_snapshot(
+            data.get("yes_dollars_fp", []),
+            data.get("no_dollars_fp", []),
+        )
+        self._books[ticker] = book
+
+        # Track sid → ticker mapping and seq
+        if sid not in self._sid_tickers:
+            self._sid_tickers[sid] = set()
+        self._sid_tickers[sid].add(ticker)
+        self._ticker_sid[ticker] = sid
+        self._sid_seq[sid] = seq
+
+        log.debug(
+            "Kalshi book snapshot %s: yes_ask=%.3f yes_bid=%.3f no_ask=%.3f no_bid=%.3f (%d yes levels, %d no levels)",
+            ticker, book.yes_ask, book.yes_bid, book.no_ask, book.no_bid,
+            len(book.yes_levels), len(book.no_levels),
+        )
+
+        await self._on_price_update(
+            ticker, book.yes_ask, book.yes_bid, book.no_ask, book.no_bid,
+            book.yes_ask_size, book.no_ask_size,
+        )
+
+    async def _handle_delta(self, msg: dict, ws) -> None:
+        sid = msg.get("sid", 0)
+        seq = msg.get("seq", 0)
+        data = msg.get("msg", {})
+        ticker = data.get("market_ticker")
+        if not ticker:
+            return
+
+        # Seq gap detection
+        expected = self._sid_seq.get(sid, 0) + 1
+        if seq != expected and expected > 1:
+            gap_tickers = list(self._sid_tickers.get(sid, {ticker}))
+            log.warning(
+                "Kalshi WS: seq gap on sid=%d (expected %d, got %d) — "
+                "requesting snapshot for %d ticker(s)",
+                sid, expected, seq, len(gap_tickers),
+            )
+            # Clear books for affected tickers
+            for t in gap_tickers:
+                self._books.pop(t, None)
+            try:
+                await self._request_snapshot(ws, gap_tickers)
+            except ConnectionClosed:
+                return
+            self._sid_seq[sid] = seq
+            return
+
+        self._sid_seq[sid] = seq
+
+        book = self._books.get(ticker)
+        if book is None:
+            # Delta before snapshot — ignore, snapshot will arrive
+            return
+
         try:
-            ask = float(raw_ask)
+            price = float(data.get("price_dollars", 0))
+            delta = float(data.get("delta_fp", 0))
         except (ValueError, TypeError):
             return
 
-        raw_bid = data.get("yes_bid_dollars")
-        bid: Optional[float] = None
-        if raw_bid is not None:
-            try:
-                bid = float(raw_bid)
-            except (ValueError, TypeError):
-                pass
+        side = data.get("side", "")
+        if side not in ("yes", "no"):
+            return
 
-        if 0.0 < ask < 1.0:
-            await self._on_price_update(ticker, ask, bid)
+        changed = book.apply_delta(side, price, delta)
+        if changed:
+            await self._on_price_update(
+                ticker, book.yes_ask, book.yes_bid, book.no_ask, book.no_bid,
+                book.yes_ask_size, book.no_ask_size,
+            )
 
 
 if __name__ == "__main__":
     """
     Standalone test. Usage:
-        python -m scrapers.kalshi_ws <market_ticker>
-
-    Example market_ticker: KXMLBGAME-26APR221410BALKC-KC
-    Get live tickers from:
-        python -c "
-    import asyncio, aiohttp
-    from scrapers.kalshi import fetch_all_prices, discover_mlb_events
-    async def main():
-        async with aiohttp.ClientSession() as s:
-            tickers = await discover_mlb_events(s)
-            markets = await fetch_all_prices(s, tickers[:2])
-            for m in markets:
-                print(m.market_ticker, m.team, m.yes_ask)
-    asyncio.run(main())
-    "
+        python -m scrapers.kalshi_ws <market_ticker> [market_ticker ...]
     """
     import os
     import sys
@@ -205,10 +378,19 @@ if __name__ == "__main__":
     async def _test() -> None:
         tick_count = 0
 
-        async def on_tick(market_ticker: str, ask: float, bid: float) -> None:
+        async def on_tick(
+            market_ticker: str,
+            yes_ask: float, yes_bid: float,
+            no_ask: float, no_bid: float,
+            yes_ask_size: float, no_ask_size: float,
+        ) -> None:
             nonlocal tick_count
             tick_count += 1
-            print(f"  TICK #{tick_count}  ticker={market_ticker}  ask={ask:.4f}  bid={bid:.4f}")
+            print(
+                f"  TICK #{tick_count:4d}  {market_ticker}  "
+                f"YES ask={yes_ask:.3f}({yes_ask_size:.0f}) bid={yes_bid:.3f}  "
+                f"NO ask={no_ask:.3f}({no_ask_size:.0f}) bid={no_bid:.3f}"
+            )
 
         client = KalshiWSClient(api_key, private_key, on_price_update=on_tick)
         task = asyncio.create_task(client.start(market_tickers))

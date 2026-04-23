@@ -41,6 +41,10 @@ class KalshiMarket:
     yes_bid: float               # best bid
     last_price: float            # last traded price
     status: str
+    no_ask: float = 0.0          # cost to buy NO (from orderbook_delta channel)
+    no_bid: float = 0.0          # best NO bid
+    yes_ask_size: float = 0.0   # contracts available at best YES ask
+    no_ask_size: float = 0.0    # contracts available at best NO ask
     volume: float = 0.0          # total contracts traded
     volume_24h: float = 0.0      # contracts traded last 24h
     open_interest: float = 0.0   # open contracts

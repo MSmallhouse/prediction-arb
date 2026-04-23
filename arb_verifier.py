@@ -85,8 +85,8 @@ async def verify_arb(
     """
     import asyncio
 
-    # Fetch both prices concurrently
-    kalshi_task = _fetch_kalshi_market(session, opp.kalshi_market.market_ticker)
+    # Fetch both prices concurrently — use the ORDER market ticker (opp_k for NO)
+    kalshi_task = _fetch_kalshi_market(session, opp.kalshi_order_market.market_ticker)
     poly_task = _fetch_poly_price(session, opp.poly_market.token_id)
     kalshi_data, poly_price = await asyncio.gather(kalshi_task, poly_task)
 
@@ -94,7 +94,10 @@ async def verify_arb(
         log.warning("Verification failed — REST fetch returned None")
         return None
 
-    rest_kalshi = float(kalshi_data.get("yes_ask_dollars", 0))
+    if opp.kalshi_side == "YES":
+        rest_kalshi = float(kalshi_data.get("yes_ask_dollars", 0))
+    else:
+        rest_kalshi = float(kalshi_data.get("no_ask_dollars", 0))
     rest_poly = poly_price
     rest_gross = 1.0 - rest_kalshi - rest_poly
     ws_gross = opp.gross_spread
