@@ -31,6 +31,9 @@ from config import (
     NBA_CANONICAL_TO_POLY_ABBR,
     NBA_KALSHI_ABBR_SET,
     NBA_POLYMARKET_TO_CANONICAL,
+    NHL_CANONICAL_TO_POLY_ABBR,
+    NHL_KALSHI_ABBR_SET,
+    NHL_POLYMARKET_TO_CANONICAL,
 )
 
 log = logging.getLogger(__name__)
@@ -57,6 +60,12 @@ _NBA_TICKER_RE = re.compile(
     r"KXNBAGAME-(\d{2})([A-Z]{3})(\d{2})([A-Z]+)$"
 )
 
+# Regex to parse Kalshi NHL event ticker:
+# KXNHLGAME-26APR26EDMANA  (no time field)
+_NHL_TICKER_RE = re.compile(
+    r"KXNHLGAME-(\d{2})([A-Z]{3})(\d{2})([A-Z]+)$"
+)
+
 
 def _split_kalshi_abbrs(combined: str, abbr_set: list[str]) -> Optional[tuple[str, str]]:
     """
@@ -76,9 +85,13 @@ def _split_kalshi_abbrs(combined: str, abbr_set: list[str]) -> Optional[tuple[st
 def _kalshi_abbr_to_poly(kalshi_abbr: str, sport: str) -> Optional[str]:
     """
     Convert a Kalshi team abbreviation to the Polymarket slug abbreviation.
-    Sport-aware: uses NBA or MLB lookup tables.
+    Sport-aware: uses NHL, NBA or MLB lookup tables.
     """
-    if sport == "nba":
+    if sport == "nhl":
+        from config import NHL_KALSHI_TO_CANONICAL
+        canonical = NHL_KALSHI_TO_CANONICAL.get(kalshi_abbr)
+        poly_abbr = NHL_CANONICAL_TO_POLY_ABBR.get(canonical) if canonical else None
+    elif sport == "nba":
         from config import NBA_KALSHI_TO_CANONICAL
         canonical = NBA_KALSHI_TO_CANONICAL.get(kalshi_abbr)
         poly_abbr = NBA_CANONICAL_TO_POLY_ABBR.get(canonical) if canonical else None
@@ -99,12 +112,17 @@ def _kalshi_abbr_to_poly(kalshi_abbr: str, sport: str) -> Optional[str]:
 def kalshi_ticker_to_poly_slug(event_ticker: str) -> Optional[str]:
     """
     Derive Polymarket event slug from a Kalshi event ticker.
-    Handles both MLB (KXMLBGAME-...) and NBA (KXNBAGAME-...).
+    Handles MLB (KXMLBGAME-...), NBA (KXNBAGAME-...), and NHL (KXNHLGAME-...).
 
     MLB: "KXMLBGAME-26APR221845NYYBOS" → "mlb-nyy-bos-2026-04-22"
     NBA: "KXNBAGAME-26APR27MINDEN"     → "nba-min-den-2026-04-27"
+    NHL: "KXNHLGAME-26APR26EDMANA"     → "nhl-edm-ana-2026-04-26"
     """
-    if event_ticker.startswith("KXNBAGAME"):
+    if event_ticker.startswith("KXNHLGAME"):
+        m = _NHL_TICKER_RE.match(event_ticker)
+        sport = "nhl"
+        abbr_set = NHL_KALSHI_ABBR_SET
+    elif event_ticker.startswith("KXNBAGAME"):
         m = _NBA_TICKER_RE.match(event_ticker)
         sport = "nba"
         abbr_set = NBA_KALSHI_ABBR_SET
@@ -145,6 +163,7 @@ class PolymarketMarket:
     game_datetime: datetime
     token_id: str                # CLOB token ID for this outcome
     yes_ask: float               # cost to buy YES (taker buy price from CLOB)
+    yes_bid: float               # best bid (updated by WS; 0.0 until first WS update)
     outcome_price: float         # price from Gamma API (used before CLOB poll)
     liquidity: float = 0.0       # USDC in order book (from Gamma API)
     fetched_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
@@ -157,6 +176,10 @@ def _normalize_poly_team(label: str) -> Optional[str]:
         return canonical
     # Check NBA short names
     canonical = NBA_POLYMARKET_TO_CANONICAL.get(label)
+    if canonical is not None:
+        return canonical
+    # Check NHL short names / nicknames
+    canonical = NHL_POLYMARKET_TO_CANONICAL.get(label)
     if canonical is not None:
         return canonical
     # Fallback: match by last word of MLB full name (e.g. "New York Yankees" → "Yankees")
@@ -320,6 +343,7 @@ async def discover_and_fetch(
                 game_datetime=game_dt,
                 token_id=token_id,
                 yes_ask=yes_ask,
+                yes_bid=0.0,
                 outcome_price=yes_ask,
                 liquidity=market_liquidity,
             ))

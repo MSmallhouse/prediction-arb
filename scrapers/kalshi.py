@@ -23,8 +23,8 @@ from typing import Optional
 import aiohttp
 
 from config import (
-    KALSHI_BASE_URL, KALSHI_MLB_SERIES, KALSHI_NBA_SERIES,
-    KALSHI_TO_CANONICAL, NBA_KALSHI_TO_CANONICAL,
+    KALSHI_BASE_URL, KALSHI_MLB_SERIES, KALSHI_NBA_SERIES, KALSHI_NHL_SERIES,
+    KALSHI_TO_CANONICAL, NBA_KALSHI_TO_CANONICAL, NHL_KALSHI_TO_CANONICAL,
 )
 
 log = logging.getLogger(__name__)
@@ -56,6 +56,9 @@ def _normalize_team(kalshi_label: str, event_ticker: str = "") -> Optional[str]:
     if event_ticker.startswith("KXNBAGAME"):
         lookup = NBA_KALSHI_TO_CANONICAL
         sport = "NBA"
+    elif event_ticker.startswith("KXNHLGAME"):
+        lookup = NHL_KALSHI_TO_CANONICAL
+        sport = "NHL"
     else:
         lookup = KALSHI_TO_CANONICAL
         sport = "MLB"
@@ -183,6 +186,14 @@ async def discover_nba_events(session: aiohttp.ClientSession) -> list[str]:
     return tickers
 
 
+async def discover_nhl_events(session: aiohttp.ClientSession) -> list[str]:
+    """Return event tickers for open KXNHLGAME events."""
+    markets = await _fetch_series_markets(session, KALSHI_NHL_SERIES)
+    tickers = list({m.event_ticker for m in markets})
+    log.info("Discovered %d open %s events", len(tickers), KALSHI_NHL_SERIES)
+    return tickers
+
+
 async def fetch_all_prices(
     session: aiohttp.ClientSession,
     event_tickers: list[str],
@@ -198,6 +209,8 @@ async def fetch_all_prices(
             series_needed.add(KALSHI_MLB_SERIES)
         elif t.startswith("KXNBAGAME"):
             series_needed.add(KALSHI_NBA_SERIES)
+        elif t.startswith("KXNHLGAME"):
+            series_needed.add(KALSHI_NHL_SERIES)
 
     results = await asyncio.gather(*[
         _fetch_series_markets(session, s) for s in series_needed

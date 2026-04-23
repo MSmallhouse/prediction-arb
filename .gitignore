@@ -5,6 +5,7 @@
 
 # Data logs (can get large, contain trading data)
 arb_opportunities*.csv
+arb_durations*.csv
 
 # Python
 __pycache__/

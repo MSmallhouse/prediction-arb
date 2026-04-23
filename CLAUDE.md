@@ -4,32 +4,35 @@ Cross-platform prediction market arbitrage scanner. Data collection and verifica
 
 ## Project Goal
 
-Identify arbitrage opportunities between Kalshi and Polymarket on MLB/NBA game-winner markets. Buy YES on Team A (one platform) + YES on Team B (other platform) for the same game. One side always pays $1; gross spread = 1 - P1 - P2. Profitable when spread > fees.
+Identify arbitrage opportunities between Kalshi and Polymarket on MLB/NBA/NHL game-winner markets. Buy YES on Team A (one platform) + YES on Team B (other platform) for the same game. One side always pays $1; gross spread = 1 - P1 - P2. Profitable when spread > fees.
 
 ## Architecture
 
 ```
-main.py              — async run loop, 10s poll, discovery every 60min
-config.py            — fee constants, tax rates, thresholds, team name maps
-arb_detector.py      — match markets, compute spreads, log to CSV
-scrapers/kalshi.py   — Kalshi REST scraper (KXMLBGAME + KXNBAGAME)
-scrapers/polymarket.py — Polymarket Gamma + CLOB scraper
+main.py                  — event-driven WS run loop, REST discovery every 60min
+config.py                — fee constants, tax rates, thresholds, team name maps
+arb_detector.py          — match markets, compute spreads
+arb_tracker.py           — OPEN/CLOSE duration tracking, CSV logging
+scrapers/kalshi.py       — Kalshi REST scraper (KXMLBGAME + KXNBAGAME + KXNHLGAME)
+scrapers/kalshi_ws.py    — Kalshi WebSocket client (RSA-PSS auth)
+scrapers/polymarket.py   — Polymarket Gamma + CLOB scraper
+scrapers/polymarket_ws.py — Polymarket CLOB WebSocket client (no auth)
 ```
 
-**Poll flow:**
-1. Kalshi: single paginated `GET /events?with_nested_markets=true` per series (2 calls total, no 429s)
-2. Polymarket: `GET /events?slug=...` per matched game via Gamma API (43 calls, ~2s)
-3. Pre-screen with Gamma prices → CLOB refresh only for candidates above MIN_GROSS_SPREAD
-4. Log all spreads >= 2% to `arb_opportunities.csv` with `profitable` boolean
+**Discovery flow (hourly REST):**
+1. Kalshi: single paginated `GET /events?with_nested_markets=true` per series (3 calls: MLB + NBA + NHL, no 429s)
+2. Polymarket: `GET /events?slug=...` per matched game via Gamma API, use `outcomePrices` as initial prices
+3. Subscribe new tickers/tokens to existing WS connections
+4. Live prices maintained by WS from that point — no further REST polling
 
 ## Markets
 
-- **Kalshi**: `KXMLBGAME` (MLB), `KXNBAGAME` (NBA). Series → events → 2 markets per game (one per team). Price field: `yes_ask_dollars`.
-- **Polymarket**: Gamma API for discovery + prices. CLOB API for live ask on candidates. Slug format: `{sport}-{away}-{home}-YYYY-MM-DD`.
+- **Kalshi**: `KXMLBGAME` (MLB), `KXNBAGAME` (NBA), `KXNHLGAME` (NHL). Series → events → 2 markets per game (one per team). Price field: `yes_ask_dollars`.
+- **Polymarket**: Gamma API for discovery + prices. CLOB WS for live prices. Slug format: `{sport}-{away}-{home}-YYYY-MM-DD`.
 
 ## Matching
 
-Slug derived from Kalshi event ticker: `KXMLBGAME-26APR221410BALKC` → `mlb-bal-kc-2026-04-22`. NBA tickers have no time field. After slug match, 12h datetime guard prevents same-teams consecutive-day false matches (game datetimes must be within 12h).
+Slug derived from Kalshi event ticker: `KXMLBGAME-26APR221410BALKC` → `mlb-bal-kc-2026-04-22`. NBA and NHL tickers have no time field. After slug match, 12h datetime guard prevents same-teams consecutive-day false matches (game datetimes must be within 12h).
 
 **Critical:** Polymarket `outcomePrices` from Gamma = displayed probability, NOT the actual ask. Always CLOB-refresh candidates. For the BAL/KC arb: Gamma showed Royals 55% but CLOB ask was different — only CLOB is tradeable.
 
@@ -37,21 +40,26 @@ Slug derived from Kalshi event ticker: `KXMLBGAME-26APR221410BALKC` → `mlb-bal
 
 ```python
 kalshi_fee  = 0.07 * P * (1 - P)          # taker per contract (confirmed correct)
-poly_fee    = 0.03 * P^2 * (1 - P)        # sports taker per share (confirmed correct)
+poly_fee    = 0.03 * P^2 * (1 - P)        # pre-v2 formula — NEEDS RE-VERIFICATION post-2026-04-28
 tax_rate    = 0.2855                        # federal 24% + Utah 4.55%
 after_tax   = net_pretax * 0.7145
 ```
 
 **Fee notes:**
 - Kalshi: standard 7¢/dollar-of-risk. Makers pay ~25% of taker fee. We are always takers.
-- Polymarket: `docs.polymarket.com` shows simpler `0.03 * P * (1-P)`, but `help.polymarket.com` sports fee formula expands to `0.03 * P^2 * (1-P)` (the p² version). Peak effective rate = 0.75% at P=0.50. Fee updated March 30, 2026 — our markets (April 2026) use this formula. Makers get rebates; we are always takers.
-- Both formulas are per-share/per-contract. At P=0.5, Kalshi fee ≈ 1.75¢, Poly fee ≈ 0.375¢.
+- Polymarket pre-v2: `0.03 * P^2 * (1-P)`. Post-v2 (after 2026-04-28): `C × feeRate × p × (1-p)` — dynamic per market, exponent changed from p² to p (roughly doubles fee at P=0.5). Re-verify `POLY_SPORTS_FEE_COEFF` and `arb_detector.poly_fee()` against a live sports market.
+- Both formulas are per-share/per-contract. At P=0.5, Kalshi fee ≈ 1.75¢, pre-v2 Poly fee ≈ 0.375¢.
 
-MIN_GROSS_SPREAD = 4% to flag. LOG_GROSS_THRESHOLD = 2% to write to arb_opportunities.csv.
+MIN_GROSS_SPREAD = 3% (dual logging: 3% → `arb_durations_3.csv`, 4% → `arb_durations_4.csv`).
 
 ## Team Name Mapping
 
-Kalshi uses city names (`yes_sub_title`), Polymarket uses full team names (MLB) or short nicknames (NBA). All maps in `config.py`. NBA/MLB abbreviations overlap (BOS, DET, CLE, PHI, etc.) — must use sport-specific tables. Same-city disambiguation: `"Los Angeles D"` = Dodgers, `"Los Angeles A"` = Angels.
+All maps in `config.py`. Must use sport-specific tables — MLB/NBA/NHL abbreviations overlap.
+
+- **MLB**: Kalshi `yes_sub_title` = city name (e.g. `"Los Angeles D"` = Dodgers, `"Los Angeles A"` = Angels). Polymarket uses full team names.
+- **NBA**: Kalshi `yes_sub_title` = city name. Polymarket uses short nicknames.
+- **NHL**: Kalshi `yes_sub_title` = `"{ABBR} {Nickname}"` format (e.g. `"EDM Oilers"`, `"UTA Mammoth"`). Polymarket uses short nicknames; Utah Hockey Club → `"Utah"` (not "Mammoth").
+- **NHL Polymarket slug quirks (confirmed)**: `lak` (not `la`), `mon` (not `mtl`), `las` (not `vgk`), `utah` (not `uta`).
 
 ## Known Data Quirks
 
@@ -75,38 +83,38 @@ Kalshi uses city names (`yes_sub_title`), Polymarket uses full team names (MLB) 
 
 **Implication:** In-game arbs are the primary target. Pre-game arbs are interesting for data but require caution on price reliability.
 
-## WebSocket Streaming (not built yet)
+**Spread size vs. duration (preliminary — needs more data):**
 
-Current 10s REST polling introduces ~5–10s of latency vs the market. In-game arbs close within 1–2 poll cycles, so WebSocket is required to capitalize on them reliably.
+Early data (n=19 closed arbs at 4%+ threshold) shows an inverse correlation between opening gross spread and duration:
 
-**Kalshi WebSocket**
-- URL: `wss://api.elections.kalshi.com/trade-api/ws/v2`
-- **Auth required** even for public data: RSA-PSS sign `{timestamp}GET/trade-api/ws/v2`, include `KALSHI-ACCESS-KEY`, `KALSHI-ACCESS-SIGNATURE`, `KALSHI-ACCESS-TIMESTAMP` headers
-- Subscribe to `ticker` channel per market ticker:
-  ```json
-  {"id": 1, "cmd": "subscribe", "params": {"channels": ["ticker"], "market_ticker": "KXMLBGAME-..."}}
-  ```
-- Tick message fields: `yes_ask_dollars`, `yes_bid_dollars`, `volume_fp`, `open_interest_fp`
-- Heartbeat: server sends Ping every 10s; respond with Pong
+| Gross spread | Mean duration |
+|---|---|
+| 4% | 0.856s |
+| 5% | 0.403s |
+| 7% | 0.051s |
+| 12% | 0.017s |
+| 17% | 0.139s |
 
-**Polymarket CLOB WebSocket**
-- URL: `wss://ws-subscriptions-clob.polymarket.com/ws/market`
-- **No auth required** for market channel
-- Subscribe by YES token ID:
-  ```json
-  {"assets_ids": ["0x...token_id"], "type": "market"}
-  ```
-- Relevant events: `price_change`, `best_bid_ask` — these carry live ask prices (same as CLOB REST)
-- Heartbeat: client sends `PING` every 10s, server responds `PONG`
-- Dynamic subscribe: send `{"assets_ids": [...], "operation": "subscribe"}` to add markets without reconnecting
+Larger mispricings close faster — likely because platforms and competing bots reprice more aggressively when the gap is large. This means the highest-payout arbs are also the least executable.
 
-**Implementation plan:**
-1. Establish Kalshi WS on startup (after RSA-PSS auth), subscribe to all discovered MLB/NBA tickers
-2. Establish Polymarket WS on startup, subscribe to YES token IDs for all matched markets
-3. Maintain in-memory price store updated by both WS streams
-4. Run arb check on every price update (sub-second latency)
-5. On new market discovery (hourly), subscribe new tickers/tokens to existing connections
-6. Fall back to REST if either WS disconnects (reconnect with exponential backoff)
+**Implication for execution layer:** There is likely an optimal spread band — wide enough to be profitable after fees, narrow enough to still be open when orders land. Executing on every detected arb regardless of size is probably suboptimal. The upper cutoff (reject arbs above X% gross) should be tuned once real order fill-time data is available.
+
+Expected value framework:
+```
+EV = P(both legs fill) × net_pretax - P(one leg fails) × single-leg fee cost
+```
+P(fill) is a function of duration. At very high spreads, P(fill) → 0 and EV turns negative despite large net_pretax.
+
+**Confound to control for:** The large-spread, fast-close observations all occurred during a single high-volatility game moment (PIT@TEX late-inning scoring run). Rapid repricing in that context may cause both large spreads AND fast closures simultaneously — meaning game phase, not spread size alone, could be the true driver. Need more data across varied game states before treating spread as a standalone filter signal.
+
+## WebSocket Streaming
+
+Both WS clients are live and replace REST price polling entirely. REST is used only for hourly market discovery.
+
+- **Kalshi**: `wss://api.elections.kalshi.com/trade-api/ws/v2`. RSA-PSS auth required on connect. Subscribe per market ticker to `ticker` channel. Server sends WS Ping frames; library auto-responds.
+- **Polymarket**: `wss://ws-subscriptions-clob.polymarket.com/ws/market`. No auth. Subscribe by YES token ID. Client sends `"PING"` every 10s; server responds `"PONG"`.
+- Both clients reconnect with exponential backoff. Dynamic subscribe adds new markets to existing connections on hourly rediscovery.
+- Arb check runs on every price tick — sub-second latency.
 
 ## Execution Layer (not built yet)
 
@@ -114,6 +122,38 @@ Current 10s REST polling introduces ~5–10s of latency vs the market. In-game a
 - Polymarket US: ED25519 auth (API key in `.env`)
 - `.env` vars: `KALSHI_API_KEY_ID`, `KALSHI_PRIVATE_KEY`, `POLYMARKET_API_KEY_ID`, `POLYMARKET_PRIVATE_KEY`
 
-## Output File
+**Language:** Python is the right choice until network latency is no longer the bottleneck. The hot path (tick → arb check → order submit) is microseconds of CPU work — network RTT dominates by 10–100x. Only revisit if VPS placement + connection pre-warming are fully optimized and Python processing time becomes a measurable fraction of the arb window. At that point, a partial Rust rewrite of the hot path is more realistic than a full port.
 
-`arb_opportunities.csv` — one row per spread >= 2% per poll. Key columns: `sport`, `profitable`, `gross_spread`, `net_pretax`, `net_aftertax`, `kalshi_open_interest`, `kalshi_volume_24h`, `poly_liquidity`. File gitignored (can be large, contains trading data).
+**Latency is the single most critical factor for execution viability.** Early data shows median arb windows of ~85ms — this is not a soft target. Every millisecond saved directly increases fill rate. All execution layer decisions should be evaluated primarily through the lens of latency.
+
+**Server locations (preliminary — not independently verified, subject to change):**
+- **Kalshi**: Believed to be Chicago based on latency testing by VPS providers (0.82–1.14ms RTT from Chicago datacenters). Aligns with their CFTC-regulated exchange status — Chicago is standard for US derivatives infra. Not confirmed directly.
+- **Polymarket CLOB**: Believed to be AWS eu-west-2 (London) based on multiple community sources. Our own benchmark showed ~27ms from home, but this is likely Cloudflare's CDN terminating locally and proxying to London — actual order-to-confirmation RTT from the US is probably ~130ms. Not confirmed directly.
+- **No single optimal VPS location**: Chicago gives ~1ms to Kalshi but ~130ms to Polymarket. London gives the reverse. US East Coast (~30–50ms to Kalshi, ~80–100ms to Polymarket) is the best compromise if opener is unknown. Once opener data is sufficient to show a consistent pattern, VPS location should be optimized toward the follower platform (the one you're racing to fill on).
+- **Re-verify before any VPS decision**: Polymarket scheduled a CLOB v2 infrastructure overhaul for April 28, 2026 — server locations may have changed. Benchmark order endpoint RTTs from candidate VPS locations before committing.
+
+**Pre-execution benchmarks required:**
+1. **Order submission round-trip latency** — benchmark the actual order endpoints on both platforms, not read endpoints. Measure full chain: request signing (RSA-PSS on Kalshi, ED25519 on Polymarket) + TCP round-trip + server processing + response parsed. Read endpoints hit caches; order endpoints hit matching engine — completely different latency profile.
+2. **VPS placement** — highest-leverage latency reduction available. A VPS co-located with platform servers can cut RTT from 20–80ms (home connection) to 1–5ms. Both platforms need low latency since no consistent opener pattern exists — one platform does not reliably reprice first. Evaluate after benchmarking order endpoints to know which region to target.
+3. **Sandbox testing** — Kalshi has a demo environment. Confirm whether Polymarket CLOB has one before benchmarking live orders.
+
+**Polymarket CLOB v2 order changes (launched 2026-04-28) — relevant when building execution layer:**
+- WS URLs/payloads unchanged — `polymarket_ws.py` unaffected
+- Collateral: USDC.e → pUSD. Wrap via Collateral Onramp `wrap()` before first trade.
+- Order structure: removed `nonce`, `feeRateBps`, `taker`; added `timestamp` (ms), `metadata`, `builder`. EIP-712 domain `"1"` → `"2"`, new Exchange contract `0xE111180000d2663C0091e4f400237545B87B996B`.
+- Builder auth: HMAC headers → `builderCode` (bytes32) field on each order.
+- **Session heartbeat**: send every 5s or all open orders cancelled (separate from WS PING at 10s).
+- **FOK orders**: use Fill-Or-Kill for arb — fills both legs or cancels, no partial exposure.
+- Test environment: `https://clob-v2.polymarket.com` (test markets: gamma-api refs 73106, 79831).
+
+**Connection pre-warming (implement before first live order):**
+- **HTTP Keep-Alive** — `aiohttp.ClientSession` already maintains persistent connections (no TCP handshake per request). Ensure the session is never discarded between orders. Add a cheap keepalive request (e.g. `GET /balance`) every 30–60s during active games to prevent server-side connection expiry — a cold connection on the first order re-pays the full handshake cost.
+- **HTTP/2** — single TCP connection with multiple concurrent requests in flight; eliminates head-of-line blocking when submitting both legs simultaneously. `aiohttp` supports HTTP/2 via `aiohttp[speedups]`. Check if both order endpoints support it (Kalshi behind CloudFront likely yes; Polymarket CLOB uncertain).
+- **TLS session resumption** — TLS 1.3 0-RTT / TLS 1.2 session tickets skip the full TLS negotiation on reconnect. Handled automatically when reusing a persistent connection; falls back to full handshake if connection was dropped. Another reason to keep connections warm.
+
+## Output Files
+
+- `arb_durations_3.csv` — all arbs ≥ 3% gross (CSV only, no console output)
+- `arb_durations_4.csv` — arbs ≥ 4% gross (console + CSV)
+- Columns: `event, game, sport, gross_spread, net_pretax, first_seen, closed_at, duration_seconds, peak_gross, opener, minutes_to_first_pitch, kalshi_team, poly_team, kalshi_ask, kalshi_bid, poly_ask, poly_bid, kalshi_oi, kalshi_vol_24h, poly_liquidity, game_datetime`
+- Both files gitignored.
