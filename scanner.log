@@ -1,0 +1,187 @@
+python-dotenv could not parse statement starting at line 32
+21:09:29  INFO     __main__  Running market discovery...
+21:09:29  INFO     scrapers.kalshi  KXNBAGAME: parsed 30 markets from 15 events
+21:09:29  INFO     scrapers.kalshi  Discovered 15 open KXNBAGAME events
+21:09:29  INFO     scrapers.kalshi  KXMLBGAME: parsed 88 markets from 44 events
+21:09:29  INFO     scrapers.kalshi  Discovered 44 open KXMLBGAME events
+21:09:29  INFO     scrapers.kalshi  KXNHLGAME: parsed 22 markets from 11 events
+21:09:29  INFO     scrapers.kalshi  Discovered 11 open KXNHLGAME events
+21:09:29  INFO     __main__  Discovered 44 MLB + 15 NBA + 11 NHL events
+21:09:29  INFO     scrapers.kalshi  KXNBAGAME: parsed 30 markets from 15 events
+21:09:29  INFO     scrapers.kalshi  KXNHLGAME: parsed 22 markets from 11 events
+21:09:29  INFO     scrapers.kalshi  KXMLBGAME: parsed 88 markets from 44 events
+21:09:29  INFO     scrapers.kalshi  Fetched prices for 140 markets total
+21:09:32  INFO     scrapers.polymarket  Polymarket: fetched 140 markets across 70 Kalshi events
+21:09:33  INFO     scrapers.polymarket  CLOB refresh: updated 140 Poly markets
+21:09:33  INFO     __main__  CLOB-refreshed 140 newly discovered Poly markets
+21:09:33  INFO     __main__  Stores: 140 Kalshi markets, 140 Poly markets
+21:09:33  INFO     __main__  Polymarket WS task launched (140 tokens)
+21:09:33  INFO     __main__  Kalshi WS task launched (140 tickers)
+21:09:33  INFO     __main__  Warmup: arb logging suppressed for 30s while prices settle
+21:09:33  INFO     scrapers.kalshi_ws  Kalshi WS: connected (140 tickers)
+21:09:34  INFO     scrapers.polymarket_ws  Polymarket WS: connected (140 tokens)
+21:10:03  INFO     __main__  Post-warmup: K 140/140 confirmed, P 140/140 confirmed — unconfirmed markets excluded from arb detection
+21:10:03  INFO     __main__  
+
+  prices: K: Cubs NO 53c   P: Cubs 44c   gross=3.0%
+
+21:12:18  INFO     __main__  
+
+  prices: K: Kings NO 70c   P: Kings 25c   gross=5.0%
+
+21:12:20  INFO     __main__  
+
+  prices: K: Kings NO 70c   P: Kings 26c   gross=4.0%
+
+21:12:21  INFO     __main__  
+
+  prices: K: Kings NO 70c   P: Kings 27c   gross=3.0%
+
+21:12:33  INFO     __main__  
+
+  prices: K: Kings NO 62c   P: Kings 26c   gross=12.0%
+
+21:12:33  INFO     __main__  
+
+  prices: K: Avalanche YES 61c   P: Kings 26c   gross=13.0%
+
+21:12:36  INFO     __main__  
+
+  prices: K: Avalanche YES 61c   P: Kings 28c   gross=11.0%
+
+21:12:36  INFO     __main__  
+
+  prices: K: Avalanche YES 61c   P: Kings 34c   gross=5.0%
+
+21:12:36  INFO     __main__  
+
+  prices: K: Avalanche YES 61c   P: Kings 35c   gross=4.0%
+
+21:12:36  INFO     __main__  
+
+  prices: K: Avalanche YES 61c   P: Kings 36c   gross=3.0%
+
+21:14:29  INFO     __main__  heartbeat — live | K: 140/140 confirmed | P: 140/140 confirmed | 3%: 1 active | 4%: 0 active | last tick 0s ago
+21:19:29  INFO     __main__  heartbeat — live | K: 140/140 confirmed | P: 140/140 confirmed | 3%: 1 active | 4%: 0 active | last tick 0s ago
+21:23:32  INFO     __main__  
+
+  prices: K: Avalanche NO 31c   P: Avalanche 57c   gross=12.0%
+
+21:23:32  INFO     __main__  
+
+  prices: K: Cubs NO 53c   P: Cubs 44c   gross=3.0%
+
+21:23:32  INFO     __main__  
+
+  prices: K: Avalanche NO 39c   P: Avalanche 57c   gross=4.0%
+
+21:23:32  INFO     __main__  
+
+  prices: K: Avalanche NO 30c   P: Avalanche 57c   gross=13.0%
+
+21:23:32  INFO     __main__  
+
+  prices: K: Avalanche NO 39c   P: Avalanche 57c   gross=4.0%
+
+21:23:32  INFO     __main__  
+
+  prices: K: Kings YES 30c   P: Avalanche 57c   gross=13.0%
+
+21:23:32  INFO     __main__  
+
+  prices: K: Kings YES 34c   P: Avalanche 57c   gross=9.0%
+
+21:23:33  INFO     __main__  
+
+  prices: K: Avalanche NO 27c   P: Avalanche 57c   gross=16.0%
+
+21:23:35  INFO     __main__  
+
+  prices: K: Kings YES 27c   P: Avalanche 58c   gross=15.0%
+
+21:23:35  INFO     __main__  
+
+  prices: K: Kings YES 27c   P: Avalanche 63c   gross=10.0%
+
+21:23:35  INFO     __main__  
+
+  prices: K: Kings NO 60c   P: Kings 36c   gross=4.0%
+
+21:23:36  INFO     __main__  
+
+  prices: K: Cubs NO 53c   P: Cubs 44c   gross=3.0%
+
+21:24:29  INFO     __main__  heartbeat — live | K: 140/140 confirmed | P: 140/140 confirmed | 3%: 1 active | 4%: 0 active | last tick 1s ago
+21:27:21  INFO     __main__  best spread: all negative (markets efficiently priced)
+21:29:29  INFO     __main__  heartbeat — live | K: 140/140 confirmed | P: 140/140 confirmed | 3%: 0 active | 4%: 0 active | last tick 0s ago
+21:30:26  INFO     __main__  
+
+  prices: K: Timberwolves NO 41c   P: Timberwolves 55c   gross=4.0%
+
+21:30:27  INFO     __main__  best spread: all negative (markets efficiently priced)
+21:33:54  INFO     __main__  
+
+  prices: K: Timberwolves NO 43c   P: Timberwolves 54c   gross=3.0%
+
+21:33:54  INFO     __main__  best spread: all negative (markets efficiently priced)
+21:33:54  INFO     __main__  
+
+  prices: K: Timberwolves NO 43c   P: Timberwolves 54c   gross=3.0%
+
+21:33:54  INFO     __main__  best spread: all negative (markets efficiently priced)
+21:34:29  INFO     __main__  heartbeat — live | K: 140/140 confirmed | P: 140/140 confirmed | 3%: 0 active | 4%: 0 active | last tick 0s ago
+21:39:29  INFO     __main__  heartbeat — live | K: 140/140 confirmed | P: 140/140 confirmed | 3%: 0 active | 4%: 0 active | last tick 0s ago
+21:44:29  INFO     __main__  heartbeat — live | K: 140/140 confirmed | P: 140/140 confirmed | 3%: 0 active | 4%: 0 active | last tick 0s ago
+21:49:29  INFO     __main__  heartbeat — live | K: 140/140 confirmed | P: 140/140 confirmed | 3%: 0 active | 4%: 0 active | last tick 0s ago
+21:54:29  INFO     __main__  heartbeat — live | K: 140/140 confirmed | P: 140/140 confirmed | 3%: 0 active | 4%: 0 active | last tick 2s ago
+21:59:29  INFO     __main__  heartbeat — live | K: 140/140 confirmed | P: 140/140 confirmed | 3%: 0 active | 4%: 0 active | last tick 0s ago
+22:01:36  INFO     __main__  
+
+  prices: K: Timberwolves NO 47c   P: Timberwolves 50c   gross=3.0%
+
+22:02:46  INFO     __main__  
+
+  prices: K: Timberwolves NO 47c   P: Timberwolves 49c   gross=4.0%
+
+22:03:12  INFO     __main__  best spread: all negative (markets efficiently priced)
+22:04:29  INFO     __main__  heartbeat — live | K: 140/140 confirmed | P: 140/140 confirmed | 3%: 0 active | 4%: 0 active | last tick 0s ago
+22:05:34  INFO     __main__  
+
+  prices: K: Timberwolves NO 48c   P: Timberwolves 49c   gross=3.0%
+
+22:06:51  INFO     __main__  best spread: all negative (markets efficiently priced)
+22:09:29  INFO     __main__  heartbeat — live | K: 140/140 confirmed | P: 140/140 confirmed | 3%: 0 active | 4%: 0 active | last tick 1s ago
+22:09:33  INFO     __main__  Running market discovery...
+22:09:33  INFO     scrapers.kalshi  KXNBAGAME: parsed 30 markets from 15 events
+22:09:33  INFO     scrapers.kalshi  Discovered 15 open KXNBAGAME events
+22:09:33  INFO     scrapers.kalshi  KXMLBGAME: parsed 88 markets from 44 events
+22:09:33  INFO     scrapers.kalshi  Discovered 44 open KXMLBGAME events
+22:09:33  INFO     scrapers.kalshi  KXNHLGAME: parsed 22 markets from 11 events
+22:09:33  INFO     scrapers.kalshi  Discovered 11 open KXNHLGAME events
+22:09:33  INFO     __main__  Discovered 44 MLB + 15 NBA + 11 NHL events
+22:09:33  INFO     scrapers.kalshi  KXNBAGAME: parsed 30 markets from 15 events
+22:09:33  INFO     scrapers.kalshi  KXNHLGAME: parsed 22 markets from 11 events
+22:09:33  INFO     scrapers.kalshi  KXMLBGAME: parsed 88 markets from 44 events
+22:09:33  INFO     scrapers.kalshi  Fetched prices for 140 markets total
+22:09:37  INFO     scrapers.polymarket  Polymarket: fetched 140 markets across 70 Kalshi events
+22:09:37  INFO     __main__  Stores: 140 Kalshi markets, 140 Poly markets
+22:11:59  INFO     __main__  
+
+  prices: K: Avalanche NO 11c   P: Avalanche 81c   gross=8.0%
+
+22:11:59  INFO     __main__  
+
+  prices: K: Avalanche NO 9c   P: Avalanche 81c   gross=10.0%
+
+22:12:00  INFO     __main__  
+
+  prices: K: Avalanche NO 9c   P: Avalanche 83c   gross=8.0%
+
+22:12:02  INFO     __main__  
+
+  prices: K: Avalanche NO 9c   P: Avalanche 88c   gross=3.0%
+
+22:12:02  INFO     __main__  best spread: all negative (markets efficiently priced)
+22:14:29  INFO     __main__  heartbeat — live | K: 140/140 confirmed | P: 140/140 confirmed | 3%: 0 active | 4%: 0 active | last tick 0s ago
+22:19:29  INFO     __main__  heartbeat — live | K: 140/140 confirmed | P: 140/140 confirmed | 3%: 0 active | 4%: 0 active | last tick 1s ago
+22:24:29  INFO     __main__  heartbeat — live | K: 140/140 confirmed | P: 140/140 confirmed | 3%: 0 active | 4%: 0 active | last tick 1s ago
