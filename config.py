@@ -145,7 +145,7 @@ CANONICAL_TO_POLY_ABBR = {
     "Mets":          "nym",
     "White Sox":     "cws",
     "Cubs":          "chc",
-    "Diamondbacks":  "ari",   # Kalshi uses AZ, Polymarket uses ari
+    "Diamondbacks":  "az",    # Kalshi uses AZ, polymarket.us uses az
     "Braves":        "atl",
     "Orioles":       "bal",
     "Reds":          "cin",
@@ -157,7 +157,7 @@ CANONICAL_TO_POLY_ABBR = {
     "Marlins":       "mia",
     "Brewers":       "mil",
     "Twins":         "min",
-    "Athletics":     "oak",   # Kalshi uses ATH, Polymarket uses oak
+    "Athletics":     "ath",   # Kalshi uses ATH, polymarket.us uses ath
     "Phillies":      "phi",
     "Pirates":       "pit",
     "Padres":        "sd",
@@ -295,7 +295,7 @@ NBA_CANONICAL_TO_POLY_ABBR = {
     "Mavericks":      "dal",
     "Nuggets":        "den",
     "Pistons":        "det",
-    "Warriors":       "gsw",
+    "Warriors":       "gs",
     "Rockets":        "hou",
     "Pacers":         "ind",
     "Clippers":       "lac",
@@ -304,15 +304,15 @@ NBA_CANONICAL_TO_POLY_ABBR = {
     "Heat":           "mia",
     "Bucks":          "mil",
     "Timberwolves":   "min",
-    "Pelicans":       "nop",
-    "Knicks":         "nyk",
+    "Pelicans":       "no",
+    "Knicks":         "ny",
     "Thunder":        "okc",
     "Magic":          "orl",
     "76ers":          "phi",
-    "Suns":           "phx",
+    "Suns":           "pho",
     "Trail Blazers":  "por",
     "Kings":          "sac",
-    "Spurs":          "sas",
+    "Spurs":          "sa",
     "Raptors":        "tor",
     "Jazz":           "uta",
     "Wizards":        "was",
@@ -436,24 +436,25 @@ NHL_POLYMARKET_TO_CANONICAL = {
 }
 
 # Maps canonical NHL team → Polymarket slug abbreviation (lowercase).
-# Confirmed from live Polymarket API: lak (not la), mon (not mtl), las (not vgk), utah (not uta).
+# polymarket.us abbreviations (confirmed from live API 2026-04-24).
 NHL_CANONICAL_TO_POLY_ABBR = {
+    "Blackhawks":     "chi",
     "Ducks":          "ana",
     "Bruins":         "bos",
     "Sabres":         "buf",
     "Hurricanes":     "car",
-    "Flames":         "cal",
+    "Flames":         "cgy",
     "Blue Jackets":   "cbj",
     "Avalanche":      "col",
     "Stars":          "dal",
     "Red Wings":      "det",
     "Oilers":         "edm",
     "Panthers":       "fla",
-    "Kings":          "lak",
+    "Kings":          "la",
     "Wild":           "min",
     "Canadiens":      "mon",
-    "Devils":         "njd",
-    "Predators":      "nsh",
+    "Devils":         "nj",
+    "Predators":      "nas",
     "Islanders":      "nyi",
     "Rangers":        "nyr",
     "Senators":       "ott",
@@ -464,11 +465,11 @@ NHL_CANONICAL_TO_POLY_ABBR = {
     "Blues":          "stl",
     "Lightning":      "tb",
     "Maple Leafs":    "tor",
-    "Utah":           "utah",
+    "Utah":           "uta",
     "Canucks":        "van",
-    "Golden Knights": "las",
+    "Golden Knights": "veg",
     "Jets":           "wpg",
-    "Capitals":       "wsh",
+    "Capitals":       "was",
 }
 
 # NHL Kalshi abbreviations sorted longest-first for greedy split.

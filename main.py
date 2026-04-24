@@ -1,8 +1,8 @@
 """
-MLB/NBA prediction market arb scanner — WebSocket edition.
+MLB/NBA/NHL prediction market arb scanner — WebSocket edition.
 
 REST: hourly market discovery only.
-WebSocket: live price updates from Kalshi and Polymarket.
+WebSocket: live price updates from Kalshi and Polymarket US.
 Output: arb_durations.csv with OPEN/CLOSE events and duration_seconds.
 
 No trading — data collection and duration research only.
@@ -21,8 +21,9 @@ from dotenv import load_dotenv
 import config
 from config import DISCOVERY_INTERVAL, MIN_GROSS_SPREAD
 from scrapers.kalshi import discover_mlb_events, discover_nba_events, discover_nhl_events, fetch_all_prices, KalshiMarket
-from scrapers.polymarket import discover_and_fetch, refresh_clob_prices, PolymarketMarket
-from scrapers.polymarket_ws import PolymarketWSClient
+from scrapers.polymarket import PolymarketMarket, kalshi_ticker_to_poly_slug
+from scrapers.polymarket_us import PolymarketUSMarket, discover_all_sports
+from scrapers.polymarket_us_ws import PolymarketUSWSClient
 from scrapers.kalshi_ws import KalshiWSClient
 from arb_detector import find_arbs
 from arb_tracker import ArbTracker, log_arb_duration
@@ -36,33 +37,35 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 logging.getLogger("aiohttp.access").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 # ── Live price stores ─────────────────────────────────────────────────────────
-# Populated by REST discovery; yes_ask updated in-place by WS callbacks.
 kalshi_by_ticker: dict[str, KalshiMarket] = {}    # market_ticker → KalshiMarket
-poly_by_token: dict[str, PolymarketMarket] = {}   # token_id → PolymarketMarket
+poly_by_token: dict[str, PolymarketMarket] = {}   # synthetic_token → PolymarketMarket
+
+# Mapping from WS slug to the two PolymarketMarket token keys it updates
+_poly_slug_to_tokens: dict[str, tuple[str, str]] = {}  # market_slug → (long_token, short_token)
 
 # ── Arb trackers ──────────────────────────────────────────────────────────────
 THRESHOLD_3 = 0.03
 THRESHOLD_4 = 0.04
 LOG_FILE_3 = Path("arb_durations_3.csv")
 LOG_FILE_4 = Path("arb_durations_4.csv")
-tracker_3 = ArbTracker()   # tracks ≥ 3% arbs → arb_durations_3.csv
-tracker_4 = ArbTracker()   # tracks ≥ 4% arbs → arb_durations_4.csv
+tracker_3 = ArbTracker()
+tracker_4 = ArbTracker()
 
-poly_ws: PolymarketWSClient | None = None
+poly_ws: PolymarketUSWSClient | None = None
 kalshi_ws: KalshiWSClient | None = None
-_ready_after: datetime | None = None  # don't log arbs until prices have settled
-_last_tick: datetime | None = None    # timestamp of most recent price update
-_last_logged_spread: float = -999.0   # suppress repeated identical best-spread logs
+_ready_after: datetime | None = None
+_last_tick: datetime | None = None
+_last_logged_spread: float = -999.0
 
 # WS confirmation: only trust prices that WS has updated at least once.
-# Prevents CLOB/Gamma seed prices from creating phantom arbs on startup.
-_poly_ws_confirmed: set[str] = set()    # token_ids that have received ≥1 WS event
-_kalshi_ws_confirmed: set[str] = set()  # market_tickers that have received ≥1 WS event
+_poly_ws_confirmed: set[str] = set()    # synthetic tokens confirmed by WS
+_kalshi_ws_confirmed: set[str] = set()  # market_tickers confirmed by WS
 
 WARMUP_SECONDS = 30
-HEARTBEAT_INTERVAL = 300  # 5 minutes
+HEARTBEAT_INTERVAL = 300
 _warmup_logged = False
 
 
@@ -72,14 +75,9 @@ async def _check_arbs() -> None:
     """Run on every WS price tick. Detects arb opens/closes and logs them."""
     now = datetime.now(timezone.utc)
 
-    # Suppress logging during warmup — Gamma prices in store haven't all been
-    # replaced by real CLOB prices yet, causing false arbs on startup.
     if _ready_after is None or now < _ready_after:
         return
 
-    # Only use markets whose prices have been confirmed by at least one WS event.
-    # Prevents CLOB/Gamma seed prices (which can be stale or midpoints) from
-    # creating phantom arbs before WS has delivered real order book data.
     kalshi_live = [m for m in kalshi_by_ticker.values() if m.market_ticker in _kalshi_ws_confirmed]
     poly_live = [m for m in poly_by_token.values() if m.token_id in _poly_ws_confirmed]
 
@@ -93,12 +91,9 @@ async def _check_arbs() -> None:
             len(poly_live), len(poly_by_token),
         )
 
-    # Single find_arbs call at 3% threshold (config.MIN_GROSS_SPREAD = 0.03)
     arbs_3 = find_arbs(kalshi_live, poly_live)
     arbs_4 = [o for o in arbs_3 if o.gross_spread >= THRESHOLD_4 - 1e-9]
 
-    # Log best spread only when it changes — arbs_3 is already sorted descending,
-    # so arbs_3[0] is the best. No second find_arbs() call needed.
     global _last_logged_spread  # noqa: PLW0603
     if arbs_3:
         best = arbs_3[0]
@@ -125,7 +120,6 @@ async def _check_arbs() -> None:
 
     ts = now.strftime("%H:%M:%S.") + f"{now.microsecond // 1000:03d}"
 
-    # Console: print 4%+ arbs only (avoids duplicate lines for arbs that hit both thresholds)
     for t in new_4:
         opp = t.opportunity
         print(
@@ -144,7 +138,6 @@ async def _check_arbs() -> None:
         )
         log_arb_duration(t, "CLOSE", LOG_FILE_4)
 
-    # 3% tracker: CSV only (no console output — would duplicate 4% arb lines)
     for t in new_3:
         log_arb_duration(t, "OPEN", LOG_FILE_3)
     for t in closed_3:
@@ -179,22 +172,85 @@ async def _on_kalshi_price(
     await _check_arbs()
 
 
-async def _on_poly_price(token_id: str, new_ask: float, new_bid: float) -> None:
+async def _on_poly_us_price(
+    market_slug: str,
+    long_ask: float,
+    long_bid: float,
+    short_ask: float,
+    short_bid: float,
+) -> None:
+    """Update both long and short PolymarketMarket objects from one WS message."""
     global _last_tick
-    market = poly_by_token.get(token_id)
-    if market is None:
-        log.debug("Poly tick for unknown token %s... — ignoring", token_id[:16])
+    token_pair = _poly_slug_to_tokens.get(market_slug)
+    if token_pair is None:
+        log.debug("PolyUS tick for unknown slug %s — ignoring", market_slug)
         return
-    _poly_ws_confirmed.add(token_id)
-    market.yes_ask = new_ask
-    if new_bid > 0:
-        market.yes_bid = new_bid
-    market.fetched_at = datetime.now(timezone.utc)
-    _last_tick = market.fetched_at
+
+    long_token, short_token = token_pair
+    now = datetime.now(timezone.utc)
+
+    long_market = poly_by_token.get(long_token)
+    if long_market is not None:
+        _poly_ws_confirmed.add(long_token)
+        long_market.yes_ask = long_ask
+        long_market.yes_bid = long_bid
+        long_market.fetched_at = now
+
+    short_market = poly_by_token.get(short_token)
+    if short_market is not None:
+        _poly_ws_confirmed.add(short_token)
+        short_market.yes_ask = short_ask
+        short_market.yes_bid = short_bid
+        short_market.fetched_at = now
+
+    _last_tick = now
     await _check_arbs()
 
 
 # ── Price store population ────────────────────────────────────────────────────
+
+def _us_markets_to_poly_markets(us_markets: list[PolymarketUSMarket]) -> list[PolymarketMarket]:
+    """
+    Convert PolymarketUSMarket objects (one per game) into PolymarketMarket
+    objects (two per game, one per team) for compatibility with find_arbs().
+    Also populates _poly_slug_to_tokens mapping for WS updates.
+    """
+    poly_markets = []
+    for um in us_markets:
+        long_token = f"{um.market_slug}:long"
+        short_token = f"{um.market_slug}:short"
+        _poly_slug_to_tokens[um.market_slug] = (long_token, short_token)
+
+        # Long side (Team A)
+        poly_markets.append(PolymarketMarket(
+            event_slug=um.event_slug,
+            market_id=um.market_id,
+            team=um.team,
+            poly_label=um.team,
+            game_datetime=um.game_datetime,
+            token_id=long_token,
+            yes_ask=um.yes_ask,
+            yes_bid=um.yes_bid,
+            outcome_price=um.yes_ask,
+            liquidity=um.liquidity,
+        ))
+
+        # Short side (Team B)
+        poly_markets.append(PolymarketMarket(
+            event_slug=um.event_slug,
+            market_id=um.market_id,
+            team=um.opposing_team,
+            poly_label=um.opposing_team,
+            game_datetime=um.game_datetime,
+            token_id=short_token,
+            yes_ask=um.opposing_ask,
+            yes_bid=um.opposing_bid,
+            outcome_price=um.opposing_ask,
+            liquidity=um.liquidity,
+        ))
+
+    return poly_markets
+
 
 def _populate_stores(
     kalshi_markets: list[KalshiMarket],
@@ -202,10 +258,8 @@ def _populate_stores(
 ) -> None:
     """
     Merge REST discovery results into price stores.
-    Preserve live WS prices for markets already in store — prevents a stale
-    REST snapshot from overwriting prices the WS has already updated.
-    Prunes markets that have left the active list (game ended, market settled)
-    so that open arb trackers can detect their closure on the next _check_arbs().
+    Preserve live WS prices for markets already in store.
+    Prunes markets that have left the active list.
     """
     fresh_kalshi = {m.market_ticker for m in kalshi_markets}
     fresh_poly   = {m.token_id      for m in poly_markets}
@@ -229,7 +283,7 @@ def _populate_stores(
                 m.yes_bid = existing.yes_bid
         poly_by_token[m.token_id] = m
 
-    # Prune markets that are no longer active
+    # Prune stale markets
     stale_k = [t for t in list(kalshi_by_ticker) if t not in fresh_kalshi]
     stale_p = [t for t in list(poly_by_token)    if t not in fresh_poly]
     for t in stale_k:
@@ -238,6 +292,11 @@ def _populate_stores(
     for t in stale_p:
         del poly_by_token[t]
         _poly_ws_confirmed.discard(t)
+    # Clean up slug mapping for pruned poly markets
+    stale_slugs = [slug for slug, (lt, st) in _poly_slug_to_tokens.items()
+                   if lt not in poly_by_token and st not in poly_by_token]
+    for slug in stale_slugs:
+        del _poly_slug_to_tokens[slug]
     if stale_k or stale_p:
         log.info("Pruned %d stale Kalshi + %d stale Poly markets", len(stale_k), len(stale_p))
 
@@ -250,6 +309,13 @@ async def _discovery_loop(session: aiohttp.ClientSession) -> None:
     On subsequent runs, subscribes new markets to existing WS connections.
     """
     global poly_ws, kalshi_ws, _ready_after
+
+    # Initialize polymarket.us SDK client (sync, used for REST discovery)
+    from polymarket_us import PolymarketUS
+    poly_us_client = PolymarketUS(
+        key_id=os.environ.get("POLYMARKET_API_KEY_ID", ""),
+        secret_key=os.environ.get("POLYMARKET_PRIVATE_KEY", ""),
+    )
 
     while True:
         log.info("Running market discovery...")
@@ -270,52 +336,68 @@ async def _discovery_loop(session: aiohttp.ClientSession) -> None:
             await asyncio.sleep(300)
             continue
 
-        log.info("Discovered %d MLB + %d NBA + %d NHL events", len(mlb_tickers), len(nba_tickers), len(nhl_tickers))
+        log.info("Discovered %d MLB + %d NBA + %d NHL Kalshi events",
+                 len(mlb_tickers), len(nba_tickers), len(nhl_tickers))
+
+        # Derive slugs and fetch Kalshi prices concurrently with Poly US discovery
+        kalshi_slugs = set()
+        for t in event_tickers:
+            slug = kalshi_ticker_to_poly_slug(t)
+            if slug:
+                kalshi_slugs.add(slug)
 
         try:
-            kalshi_markets, poly_markets = await asyncio.gather(
-                fetch_all_prices(session, event_tickers),
-                discover_and_fetch(session, event_tickers),
+            # Kalshi prices via REST (async)
+            kalshi_markets = await fetch_all_prices(session, event_tickers)
+            # Polymarket US discovery via SDK (sync — runs in thread to not block)
+            us_markets = await asyncio.to_thread(
+                discover_all_sports, poly_us_client, kalshi_slugs,
             )
         except Exception as exc:
             log.error("Price fetch failed: %s — retrying in 5 minutes", exc)
             await asyncio.sleep(300)
             continue
 
-        # CLOB-refresh newly discovered Poly markets before storing.
-        # Gamma outcomePrices = midpoint, not real ask. Seed with actual CLOB ask
-        # so the first arb check uses tradeable prices. Set yes_ask=1.0 for empty books.
-        new_poly = [m for m in poly_markets if m.token_id not in poly_by_token]
-        if new_poly:
-            await refresh_clob_prices(session, new_poly)
-            log.info("CLOB-refreshed %d newly discovered Poly markets", len(new_poly))
+        # Convert polymarket.us markets to PolymarketMarket objects (2 per game)
+        poly_markets = _us_markets_to_poly_markets(us_markets)
 
         _populate_stores(kalshi_markets, poly_markets)
         log.info(
-            "Stores: %d Kalshi markets, %d Poly markets",
-            len(kalshi_by_ticker), len(poly_by_token),
+            "Stores: %d Kalshi markets, %d Poly markets (%d games)",
+            len(kalshi_by_ticker), len(poly_by_token), len(us_markets),
         )
 
         if poly_ws is None:
-            # First discovery: construct and launch WS clients.
-            # Stores are fully populated before create_task yields, so no tick
-            # can arrive for an unknown ticker during startup.
-            api_key = os.environ.get("KALSHI_API_KEY_ID", "")
-            private_key = os.environ.get("KALSHI_PRIVATE_KEY", "")
-            if not api_key or not private_key:
-                log.error("Missing KALSHI_API_KEY_ID or KALSHI_PRIVATE_KEY in .env — Kalshi WS disabled")
+            # First discovery: launch WS clients.
+            kalshi_api_key = os.environ.get("KALSHI_API_KEY_ID", "")
+            kalshi_private_key = os.environ.get("KALSHI_PRIVATE_KEY", "")
+            if not kalshi_api_key or not kalshi_private_key:
+                log.error("Missing KALSHI_API_KEY_ID or KALSHI_PRIVATE_KEY — Kalshi WS disabled")
 
-            poly_ws = PolymarketWSClient(on_price_update=_on_poly_price)
-            asyncio.create_task(
-                poly_ws.start(initial_token_ids=list(poly_by_token.keys())),
-                name="polymarket-ws",
-            )
-            log.info("Polymarket WS task launched (%d tokens)", len(poly_by_token))
+            poly_key_id = os.environ.get("POLYMARKET_API_KEY_ID", "")
+            poly_secret = os.environ.get("POLYMARKET_PRIVATE_KEY", "")
+            if not poly_key_id or not poly_secret:
+                log.error("Missing POLYMARKET_API_KEY_ID or POLYMARKET_PRIVATE_KEY — Poly WS disabled")
 
-            if api_key and private_key:
+            # Polymarket US WS — subscribe by market slug
+            ws_slugs = list(_poly_slug_to_tokens.keys())
+            if poly_key_id and poly_secret:
+                poly_ws = PolymarketUSWSClient(
+                    key_id=poly_key_id,
+                    secret_key=poly_secret,
+                    on_price_update=_on_poly_us_price,
+                )
+                asyncio.create_task(
+                    poly_ws.start(initial_slugs=ws_slugs),
+                    name="polymarket-us-ws",
+                )
+                log.info("Polymarket US WS task launched (%d slugs)", len(ws_slugs))
+
+            # Kalshi WS
+            if kalshi_api_key and kalshi_private_key:
                 kalshi_ws = KalshiWSClient(
-                    api_key_id=api_key,
-                    private_key_pem=private_key,
+                    api_key_id=kalshi_api_key,
+                    private_key_pem=kalshi_private_key,
                     on_price_update=_on_kalshi_price,
                 )
                 asyncio.create_task(
@@ -327,13 +409,12 @@ async def _discovery_loop(session: aiohttp.ClientSession) -> None:
             _ready_after = datetime.now(timezone.utc) + timedelta(seconds=WARMUP_SECONDS)
             log.info("Warmup: arb logging suppressed for %ds while prices settle", WARMUP_SECONDS)
         else:
-            # Subsequent discovery: subscribe any new markets dynamically.
-            tasks = [poly_ws.subscribe(list(poly_by_token.keys()))]
+            # Subsequent discovery: subscribe new markets dynamically.
+            new_slugs = list(_poly_slug_to_tokens.keys())
+            tasks = [poly_ws.subscribe(new_slugs)]
             if kalshi_ws is not None:
                 tasks.append(kalshi_ws.subscribe(list(kalshi_by_ticker.keys())))
             await asyncio.gather(*tasks)
-            # Flush any arbs whose markets were just pruned — they won't get a
-            # WS tick to close them naturally since the game has ended.
             await _check_arbs()
 
         await asyncio.sleep(DISCOVERY_INTERVAL.total_seconds())
@@ -342,7 +423,7 @@ async def _discovery_loop(session: aiohttp.ClientSession) -> None:
 # ── Heartbeat ────────────────────────────────────────────────────────────────
 
 async def _heartbeat_loop() -> None:
-    """Log a status line every 5 minutes so scanner.log shows the system is alive."""
+    """Log a status line every 5 minutes."""
     while True:
         await asyncio.sleep(HEARTBEAT_INTERVAL)
         now = datetime.now(timezone.utc)
@@ -366,7 +447,6 @@ async def _heartbeat_loop() -> None:
             tracker_4.active_count,
             tick_str,
         )
-        # Warn about unconfirmed markets — might indicate WS subscription issues
         if k_conf < k_total or p_conf < p_total:
             unconf_k = [t for t in kalshi_by_ticker if t not in _kalshi_ws_confirmed]
             unconf_p = [t for t in poly_by_token if t not in _poly_ws_confirmed]
@@ -375,7 +455,7 @@ async def _heartbeat_loop() -> None:
                             ", ".join(kalshi_by_ticker[t].team for t in unconf_k[:5]))
             if unconf_p:
                 log.warning("Poly unconfirmed (%d): %s", len(unconf_p),
-                            ", ".join(f"{poly_by_token[t].event_slug} {poly_by_token[t].team}" for t in unconf_p[:5]))
+                            ", ".join(f"{poly_by_token[t].event_slug}" for t in unconf_p[:5]))
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
@@ -392,7 +472,6 @@ if __name__ == "__main__":
     try:
         asyncio.run(run())
     except KeyboardInterrupt:
-        # Flush any open arbs on exit
         now = datetime.now(timezone.utc)
         closed_3 = tracker_3.force_close_all(now)
         closed_4 = tracker_4.force_close_all(now)
