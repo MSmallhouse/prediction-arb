@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from polymarket_us import PolymarketUS
+from scrapers.polymarket import _normalize_poly_team
 
 log = logging.getLogger(__name__)
 
@@ -171,8 +172,13 @@ def discover_moneyline_markets(
         if long_side is None or short_side is None:
             continue
 
-        long_team = long_side.get("team", {}).get("name", "")
-        short_team = short_side.get("team", {}).get("name", "")
+        long_team_raw = long_side.get("team", {}).get("name", "")
+        short_team_raw = short_side.get("team", {}).get("name", "")
+        long_team = _normalize_poly_team(long_team_raw)
+        short_team = _normalize_poly_team(short_team_raw)
+        if long_team is None or short_team is None:
+            log.warning("Unknown polymarket.us team: %r / %r in %s", long_team_raw, short_team_raw, event_slug)
+            continue
 
         best_bid = moneyline.get("bestBidQuote", {}).get("value")
         best_ask = moneyline.get("bestAskQuote", {}).get("value")
