@@ -15,7 +15,7 @@ KALSHI_FEE_COEFF = 0.07
 # Polymarket sports taker: 0.03 * P * (1 - P)  per share
 # Verified against Polymarket docs post-CLOB v2 (2026-04-28). Coefficient = 0.03,
 # exponent is p (not p²). Peaks at 0.75% at P=0.5.
-POLY_SPORTS_FEE_COEFF = 0.03
+POLY_SPORTS_FEE_COEFF = 0.05   # polymarket.us fee (was 0.03 on polymarket.com)
 
 # ── Tax rates (Utah, short-term capital gains assumption) ───────────────────────
 FEDERAL_TAX_RATE = 0.24

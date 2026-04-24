@@ -40,9 +40,9 @@ _FIELDNAMES = [
     "poly_bid",              # YES bid on Polymarket (0 if not yet received from WS)
     "kalshi_oi",             # Kalshi open interest at first_seen
     "kalshi_vol_24h",        # Kalshi 24h volume at first_seen
-    "poly_liquidity",        # Polymarket liquidity (USDC) at first_seen
     "game_datetime",         # scheduled game start (ISO-8601 UTC)
     "kalshi_depth",          # contracts available at the Kalshi best ask we'd trade
+    "poly_depth",            # contracts available at the Poly best ask we'd trade
 ]
 
 # Unique key per directional arb: (event_slug, kalshi_market_ticker, poly_token_id)
@@ -175,7 +175,7 @@ def log_arb_duration(tracked: TrackedArb, event: str, filepath: Path = DURATION_
             "poly_bid": f"{opp.poly_market.yes_bid:.4f}",
             "kalshi_oi": f"{opp.kalshi_order_market.open_interest:.0f}",
             "kalshi_vol_24h": f"{opp.kalshi_order_market.volume_24h:.0f}",
-            "poly_liquidity": f"{opp.poly_market.liquidity:.0f}",
             "game_datetime": opp.game_datetime.isoformat(),
             "kalshi_depth": f"{opp.kalshi_order_market.yes_ask_size if opp.kalshi_side == 'YES' else opp.kalshi_order_market.no_ask_size:.0f}",
+            "poly_depth": f"{opp.poly_market.yes_ask_size:.0f}",
         })

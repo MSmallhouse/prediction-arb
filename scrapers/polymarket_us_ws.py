@@ -55,10 +55,10 @@ class PolymarketUSWSClient:
         self,
         key_id: str,
         secret_key: str,
-        on_price_update: Callable[[str, float, float, float, float], Awaitable[None]],
+        on_price_update: Callable[[str, float, float, float, float, float, float], Awaitable[None]],
     ) -> None:
         """
-        on_price_update(market_slug, long_ask, long_bid, short_ask, short_bid)
+        on_price_update(market_slug, long_ask, long_bid, short_ask, short_bid, long_ask_size, short_ask_size)
         """
         self._key_id = key_id
         self._secret_key = secret_key
@@ -145,19 +145,24 @@ class PolymarketUSWSClient:
 
         if not offers:
             long_ask = 1.0
+            long_ask_size = 0.0
         else:
             try:
                 long_ask = float(offers[0]["px"]["value"])
+                long_ask_size = float(offers[0]["qty"])
             except (KeyError, ValueError, TypeError, IndexError):
                 return
 
         if not bids:
             long_bid = 0.0
+            short_ask_size = 0.0
         else:
             try:
                 long_bid = float(bids[0]["px"]["value"])
+                short_ask_size = float(bids[0]["qty"])  # short ask depth = long bid depth
             except (KeyError, ValueError, TypeError, IndexError):
                 long_bid = 0.0
+                short_ask_size = 0.0
 
         short_ask = round(1.0 - long_bid, 4) if long_bid > 0 else 1.0
         short_bid = round(1.0 - long_ask, 4) if long_ask < 1 else 0.0
@@ -168,7 +173,10 @@ class PolymarketUSWSClient:
             return
         self._last_prices[slug] = new_prices
 
-        await self._on_price_update(slug, long_ask, long_bid, short_ask, short_bid)
+        await self._on_price_update(
+            slug, long_ask, long_bid, short_ask, short_bid,
+            long_ask_size, short_ask_size,
+        )
 
 
 if __name__ == "__main__":
@@ -198,6 +206,7 @@ if __name__ == "__main__":
             slug: str,
             long_ask: float, long_bid: float,
             short_ask: float, short_bid: float,
+            long_ask_size: float, short_ask_size: float,
         ) -> None:
             nonlocal tick_count
             tick_count += 1
@@ -206,8 +215,8 @@ if __name__ == "__main__":
             home = parts[3] if len(parts) > 3 else "?"
             print(
                 f"  #{tick_count:3d}  {away}@{home}  "
-                f"LONG ask={long_ask:.3f} bid={long_bid:.3f}  "
-                f"SHORT ask={short_ask:.3f} bid={short_bid:.3f}"
+                f"LONG ask={long_ask:.3f}({long_ask_size:.0f}) bid={long_bid:.3f}  "
+                f"SHORT ask={short_ask:.3f}({short_ask_size:.0f}) bid={short_bid:.3f}"
             )
 
         client = PolymarketUSWSClient(key_id, secret_key, on_price_update=on_tick)

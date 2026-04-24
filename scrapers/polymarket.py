@@ -167,6 +167,7 @@ class PolymarketMarket:
     yes_bid: float               # best bid (updated by WS; 0.0 until first WS update)
     outcome_price: float         # price from Gamma API (used before CLOB poll)
     liquidity: float = 0.0       # USDC in order book (from Gamma API)
+    yes_ask_size: float = 0.0   # contracts available at best ask (from WS)
     fetched_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 

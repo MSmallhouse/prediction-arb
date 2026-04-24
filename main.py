@@ -178,6 +178,8 @@ async def _on_poly_us_price(
     long_bid: float,
     short_ask: float,
     short_bid: float,
+    long_ask_size: float,
+    short_ask_size: float,
 ) -> None:
     """Update both long and short PolymarketMarket objects from one WS message."""
     global _last_tick
@@ -194,6 +196,7 @@ async def _on_poly_us_price(
         _poly_ws_confirmed.add(long_token)
         long_market.yes_ask = long_ask
         long_market.yes_bid = long_bid
+        long_market.yes_ask_size = long_ask_size
         long_market.fetched_at = now
 
     short_market = poly_by_token.get(short_token)
@@ -201,6 +204,7 @@ async def _on_poly_us_price(
         _poly_ws_confirmed.add(short_token)
         short_market.yes_ask = short_ask
         short_market.yes_bid = short_bid
+        short_market.yes_ask_size = short_ask_size
         short_market.fetched_at = now
 
     _last_tick = now
