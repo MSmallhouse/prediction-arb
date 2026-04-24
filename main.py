@@ -26,7 +26,6 @@ from scrapers.polymarket_ws import PolymarketWSClient
 from scrapers.kalshi_ws import KalshiWSClient
 from arb_detector import find_arbs
 from arb_tracker import ArbTracker, log_arb_duration
-from arb_verifier import verify_arb
 
 load_dotenv()
 
@@ -53,7 +52,6 @@ tracker_4 = ArbTracker()   # tracks ≥ 4% arbs → arb_durations_4.csv
 
 poly_ws: PolymarketWSClient | None = None
 kalshi_ws: KalshiWSClient | None = None
-_http_session: aiohttp.ClientSession | None = None  # set in run(), used by verifier
 _ready_after: datetime | None = None  # don't log arbs until prices have settled
 _last_tick: datetime | None = None    # timestamp of most recent price update
 _last_logged_spread: float = -999.0   # suppress repeated identical best-spread logs
@@ -66,52 +64,6 @@ _kalshi_ws_confirmed: set[str] = set()  # market_tickers that have received ≥1
 WARMUP_SECONDS = 30
 HEARTBEAT_INTERVAL = 300  # 5 minutes
 _warmup_logged = False
-
-
-# ── REST verification (fire-and-forget) ──────────────────────────────────────
-
-async def _verify_and_log(t, opp) -> None:
-    """Hit REST to verify arb, log result. Runs as background task."""
-    from arb_tracker import TrackedArb
-    try:
-        v = await verify_arb(_http_session, opp)
-    except Exception as exc:
-        log.warning("  VERIFY FAILED — %s: %s", opp.game_label, exc)
-        return
-    if v is None:
-        log.warning("  VERIFY FAILED — REST fetch error for %s", opp.game_label)
-        return
-    t.rest_kalshi_ask = v.rest_kalshi_price
-    t.rest_poly_ask = v.rest_poly_price
-    t.rest_gross = v.rest_gross
-    if v.confirmed:
-        t.verified = "real"
-        log.info(
-            "\n\n  VERIFIED REAL  %s  gross=%.1f%%\n"
-            "    REST: K: %s %s %dc   P: %s %dc\n"
-            "    WS:   K: %dc   P: %dc\n",
-            opp.game_label, v.rest_gross * 100,
-            opp.kalshi_order_market.team, opp.kalshi_side,
-            round(v.rest_kalshi_price * 100),
-            opp.poly_market.team,
-            round(v.rest_poly_price * 100),
-            round(v.ws_kalshi_price * 100),
-            round(v.ws_poly_price * 100),
-        )
-    else:
-        t.verified = "phantom"
-        log.warning(
-            "\n\n  PHANTOM  %s  ws_gross=%.1f%%  rest_gross=%.1f%%\n"
-            "    REST: K: %s %s %dc   P: %s %dc\n"
-            "    WS:   K: %dc   P: %dc\n",
-            opp.game_label, v.ws_gross * 100, v.rest_gross * 100,
-            opp.kalshi_order_market.team, opp.kalshi_side,
-            round(v.rest_kalshi_price * 100),
-            opp.poly_market.team,
-            round(v.rest_poly_price * 100),
-            round(v.ws_kalshi_price * 100),
-            round(v.ws_poly_price * 100),
-        )
 
 
 # ── Arb check ─────────────────────────────────────────────────────────────────
@@ -183,9 +135,6 @@ async def _check_arbs() -> None:
             f"P:{opp.poly_market.team}@{opp.poly_market.yes_ask:.3f}"
         )
         log_arb_duration(t, "OPEN", LOG_FILE_4)
-        # REST verification — fire-and-forget, logs result when done
-        if _http_session is not None:
-            asyncio.create_task(_verify_and_log(t, opp), name=f"verify-{opp.game_label}")
 
     for t in closed_4:
         opp = t.opportunity
@@ -432,11 +381,9 @@ async def _heartbeat_loop() -> None:
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 async def run() -> None:
-    global _http_session
     print(f"Arb scanner starting — 3% threshold → {LOG_FILE_3}  |  4% threshold → {LOG_FILE_4}")
     print()
     async with aiohttp.ClientSession() as session:
-        _http_session = session
         asyncio.create_task(_heartbeat_loop(), name="heartbeat")
         await _discovery_loop(session)
 

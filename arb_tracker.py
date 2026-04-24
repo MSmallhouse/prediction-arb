@@ -42,10 +42,6 @@ _FIELDNAMES = [
     "kalshi_vol_24h",        # Kalshi 24h volume at first_seen
     "poly_liquidity",        # Polymarket liquidity (USDC) at first_seen
     "game_datetime",         # scheduled game start (ISO-8601 UTC)
-    "verified",              # REST verification result: "real", "phantom", or "" (not checked)
-    "rest_kalshi_ask",       # REST-verified Kalshi ask (empty if not checked)
-    "rest_poly_ask",         # REST-verified Poly ask (empty if not checked)
-    "rest_gross",            # gross spread from REST prices (empty if not checked)
     "kalshi_depth",          # contracts available at the Kalshi best ask we'd trade
 ]
 
@@ -77,10 +73,6 @@ class TrackedArb:
     last_seen: datetime
     peak_gross: float = field(init=False)
     opener: str = field(init=False)  # "kalshi" or "poly" — which platform repriced first
-    verified: str = ""               # "real", "phantom", or "" (set by main.py after REST check)
-    rest_kalshi_ask: float = 0.0
-    rest_poly_ask: float = 0.0
-    rest_gross: float = 0.0
 
     def __post_init__(self) -> None:
         self.peak_gross = self.opportunity.gross_spread
@@ -185,9 +177,5 @@ def log_arb_duration(tracked: TrackedArb, event: str, filepath: Path = DURATION_
             "kalshi_vol_24h": f"{opp.kalshi_order_market.volume_24h:.0f}",
             "poly_liquidity": f"{opp.poly_market.liquidity:.0f}",
             "game_datetime": opp.game_datetime.isoformat(),
-            "verified": tracked.verified,
-            "rest_kalshi_ask": f"{tracked.rest_kalshi_ask:.4f}" if tracked.verified else "",
-            "rest_poly_ask": f"{tracked.rest_poly_ask:.4f}" if tracked.verified else "",
-            "rest_gross": f"{tracked.rest_gross:.4f}" if tracked.verified else "",
             "kalshi_depth": f"{opp.kalshi_order_market.yes_ask_size if opp.kalshi_side == 'YES' else opp.kalshi_order_market.no_ask_size:.0f}",
         })
