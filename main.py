@@ -27,6 +27,7 @@ from scrapers.polymarket_us_ws import PolymarketUSWSClient
 from scrapers.kalshi_ws import KalshiWSClient
 from arb_detector import find_arbs
 from arb_tracker import ArbTracker, log_arb_duration
+import convergence_tracker
 
 load_dotenv()
 
@@ -138,7 +139,29 @@ async def _check_arbs() -> None:
         )
         log_arb_duration(t, "CLOSE", LOG_FILE_4)
 
+    # Start convergence tracking for all new 3%+ arbs
     for t in new_3:
+        opp = t.opportunity
+        # Derive market_slug from poly token_id (e.g. "aec-mlb-phi-atl-2026-04-24:long" → "aec-mlb-phi-atl-2026-04-24")
+        poly_token = opp.poly_market.token_id
+        market_slug = poly_token.rsplit(":", 1)[0] if ":" in poly_token else poly_token
+        sport = "MLB" if "mlb" in opp.poly_market.event_slug else ("NBA" if "nba" in opp.poly_market.event_slug else "NHL")
+        convergence_tracker.start_tracking(
+            arb_id=t.first_seen.isoformat(),
+            game=opp.game_label,
+            sport=sport,
+            opener=t.opener,
+            arb_gross=opp.gross_spread,
+            kalshi_ask=opp.kalshi_ask,
+            kalshi_side=opp.kalshi_side,
+            poly_team=opp.poly_market.team,
+            poly_token_id=poly_token,
+            market_slug=market_slug,
+            poly_ask=opp.poly_market.yes_ask,
+            poly_bid=opp.poly_market.yes_bid,
+            poly_depth=opp.poly_market.yes_ask_size,
+            now=now,
+        )
         log_arb_duration(t, "OPEN", LOG_FILE_3)
     for t in closed_3:
         log_arb_duration(t, "CLOSE", LOG_FILE_3)
@@ -206,6 +229,14 @@ async def _on_poly_us_price(
         short_market.yes_bid = short_bid
         short_market.yes_ask_size = short_ask_size
         short_market.fetched_at = now
+
+    # Feed convergence tracker
+    convergence_tracker.on_poly_tick(
+        market_slug, long_ask, long_bid, short_ask, short_bid,
+        long_ask_size, short_ask_size, now,
+    )
+    # Flush expired trackers
+    convergence_tracker.flush_expired(now)
 
     _last_tick = now
     await _check_arbs()
@@ -486,5 +517,8 @@ if __name__ == "__main__":
                 log_arb_duration(t, "CLOSE", LOG_FILE_3)
             for t in closed_4:
                 log_arb_duration(t, "CLOSE", LOG_FILE_4)
+        conv_flushed = convergence_tracker.flush_all()
+        if conv_flushed:
+            print(f"Flushed {conv_flushed} convergence tracker(s).")
         print("Stopped.")
         sys.exit(0)
