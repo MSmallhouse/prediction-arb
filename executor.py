@@ -245,8 +245,8 @@ async def _execute_trade(
                 net_pos = int(pos.get("netPosition", 0))
                 if net_pos > 0:
                     log.info("  POSITION FOUND: netPosition=%d — buy DID fill!", net_pos)
-                    # Continue to sell step — don't return
-                    buy_order_id = "unknown-filled"
+                    # Continue to sell step — skip the normal BUY log below
+                    buy_order_id = "position-check"
                     _log_execution({
                         "timestamp": now.isoformat(), "game": game, "sport": sport,
                         "action": "BUY", "market_slug": market_slug, "intent": intent,
@@ -294,15 +294,17 @@ async def _execute_trade(
             _in_flight.discard(arb_key)
             return
 
-    _log_execution({
-        "timestamp": now.isoformat(), "game": game, "sport": sport,
-        "action": "BUY", "market_slug": market_slug, "intent": intent,
-        "buy_price": f"{buy_price:.4f}", "sell_price": "", "quantity": config.quantity,
-        "gross_spread": f"{gross_spread:.4f}", "profit": "",
-        "buy_fee": f"{buy_fee:.4f}", "sell_fee": "",
-        "hold_time_ms": "", "order_id": buy_order_id,
-        "poly_bid_at_exit": "", "exit_reason": "", "error": "",
-    })
+    # Log BUY (skip if already logged via position-check path)
+    if buy_order_id != "position-check":
+        _log_execution({
+            "timestamp": now.isoformat(), "game": game, "sport": sport,
+            "action": "BUY", "market_slug": market_slug, "intent": intent,
+            "buy_price": f"{buy_price:.4f}", "sell_price": "", "quantity": config.quantity,
+            "gross_spread": f"{gross_spread:.4f}", "profit": "",
+            "buy_fee": f"{buy_fee:.4f}", "sell_fee": "",
+            "hold_time_ms": "", "order_id": buy_order_id,
+            "poly_bid_at_exit": "", "exit_reason": "", "error": "",
+        })
 
     # ── Step 2: Place maker sell at target ──────────────────────────────
     sell_intent = "ORDER_INTENT_SELL_LONG" if "LONG" in intent else "ORDER_INTENT_SELL_SHORT"
