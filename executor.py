@@ -406,13 +406,17 @@ async def _execute_trade(
 
     _in_flight.discard(arb_key)
 
-    # Trade counter — auto-disable after max_trades
+    # Trade counter — only count CONVERGED (maker fill) as completed.
+    # Taker exits (timeout, price_drop) keep the executor running.
     global _trade_count
-    _trade_count += 1
-    if config.max_trades > 0 and _trade_count >= config.max_trades:
-        config.enabled = False
-        print(f"\n{'='*60}")
-        print(f"  EXECUTOR DISABLED — completed {_trade_count} trade(s)")
-        print(f"  Result: {exit_reason}  profit={profit:.4f}")
-        print(f"  Check executions.csv for full details")
-        print(f"{'='*60}\n")
+    if exit_reason == "converged":
+        _trade_count += 1
+        if config.max_trades > 0 and _trade_count >= config.max_trades:
+            config.enabled = False
+            print(f"\n{'='*60}")
+            print(f"  EXECUTOR DISABLED — {_trade_count} maker fill(s) confirmed")
+            print(f"  Result: {exit_reason}  profit={profit:.4f}")
+            print(f"  Check executions.csv for full details")
+            print(f"{'='*60}\n")
+    else:
+        print(f"\n  Trade exited ({exit_reason}) — executor still active, waiting for maker fill\n")
