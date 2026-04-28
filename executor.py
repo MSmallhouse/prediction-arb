@@ -64,6 +64,8 @@ class ExecutionConfig:
     timeout_seconds: float = 15.0      # bail after 15s (was 30s, convergence window passes by then)
     price_drop_threshold: float = 0.05  # bail if poly_ask drops this much below buy (5c, limited data)
     only_kalshi_opener: bool = True     # only fire when Kalshi opened the arb
+    min_buy_price: float = 0.15         # skip teams below 15c (likely losing, game-ending arbs)
+    max_buy_price: float = 0.85         # skip teams above 85c (same issue, other side)
     max_trades: int = 1                 # stop executing after this many completed trades (0 = unlimited)
 
 
@@ -122,6 +124,10 @@ async def maybe_execute(
         return
 
     if opp.poly_market.yes_ask_size < config.min_poly_depth:
+        return
+
+    # Price range filter: skip game-ending arbs where the team is nearly decided
+    if opp.poly_market.yes_ask < config.min_buy_price or opp.poly_market.yes_ask > config.max_buy_price:
         return
 
     if arb_key in _in_flight:
