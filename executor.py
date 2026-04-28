@@ -31,6 +31,7 @@ log = logging.getLogger(__name__)
 EXECUTION_LOG = Path("executions.csv")
 
 _FIELDNAMES = [
+    "arb_id",               # first_seen ISO timestamp — joins to convergence_log and arb_durations
     "timestamp",
     "game",
     "sport",
@@ -111,6 +112,7 @@ async def maybe_execute(
     opp,
     opener: str,
     arb_key: str,
+    arb_id: str,
     poly_by_token: dict,
 ) -> None:
     """Check if this arb qualifies for execution. If so, fire as background task."""
@@ -158,12 +160,13 @@ async def maybe_execute(
         _execute_trade(
             client=client,
             arb_key=arb_key,
+            arb_id=arb_id,
             game=opp.game_label,
             sport=sport,
             market_slug=market_slug,
             intent=intent,
-            buy_price=opp.poly_market.yes_ask,  # our internal price (what we think we're paying)
-            order_price=order_price,              # price to send to API (inverted for SHORT)
+            buy_price=opp.poly_market.yes_ask,
+            order_price=order_price,
             gross_spread=opp.gross_spread,
             poly_token_id=poly_token,
             poly_by_token=poly_by_token,
@@ -175,6 +178,7 @@ async def maybe_execute(
 async def _execute_trade(
     client: PolymarketUS,
     arb_key: str,
+    arb_id: str,
     game: str,
     sport: str,
     market_slug: str,
@@ -229,7 +233,7 @@ async def _execute_trade(
         if cum_qty == 0 or state in ("ORDER_STATE_CANCELLED", "ORDER_STATE_REJECTED", "ORDER_STATE_NEW"):
             log.info("  BUY did not fill — aborting")
             _log_execution({
-                "timestamp": now.isoformat(), "game": game, "sport": sport,
+                "arb_id": arb_id, "timestamp": now.isoformat(), "game": game, "sport": sport,
                 "action": "BUY_FAILED", "market_slug": market_slug, "intent": intent,
                 "buy_price": f"{buy_price:.4f}", "sell_price": "", "quantity": config.quantity,
                 "gross_spread": f"{gross_spread:.4f}", "profit": "",
@@ -254,7 +258,7 @@ async def _execute_trade(
                     # Continue to sell step — skip the normal BUY log below
                     buy_order_id = "position-check"
                     _log_execution({
-                        "timestamp": now.isoformat(), "game": game, "sport": sport,
+                        "arb_id": arb_id, "timestamp": now.isoformat(), "game": game, "sport": sport,
                         "action": "BUY", "market_slug": market_slug, "intent": intent,
                         "buy_price": f"{buy_price:.4f}", "sell_price": "", "quantity": config.quantity,
                         "gross_spread": f"{gross_spread:.4f}", "profit": "",
@@ -266,7 +270,7 @@ async def _execute_trade(
                 else:
                     log.info("  No position found — buy genuinely failed")
                     _log_execution({
-                        "timestamp": now.isoformat(), "game": game, "sport": sport,
+                        "arb_id": arb_id, "timestamp": now.isoformat(), "game": game, "sport": sport,
                         "action": "BUY_ERROR", "market_slug": market_slug, "intent": intent,
                         "buy_price": f"{buy_price:.4f}", "sell_price": "", "quantity": config.quantity,
                         "gross_spread": f"{gross_spread:.4f}", "profit": "",
@@ -278,7 +282,7 @@ async def _execute_trade(
             except Exception as pos_exc:
                 log.error("  Position check also failed: %s", pos_exc)
                 _log_execution({
-                    "timestamp": now.isoformat(), "game": game, "sport": sport,
+                    "arb_id": arb_id, "timestamp": now.isoformat(), "game": game, "sport": sport,
                     "action": "BUY_ERROR", "market_slug": market_slug, "intent": intent,
                     "buy_price": f"{buy_price:.4f}", "sell_price": "", "quantity": config.quantity,
                     "gross_spread": f"{gross_spread:.4f}", "profit": "",
@@ -290,7 +294,7 @@ async def _execute_trade(
         else:
             log.error("  BUY failed: %s", exc)
             _log_execution({
-                "timestamp": now.isoformat(), "game": game, "sport": sport,
+                "arb_id": arb_id, "timestamp": now.isoformat(), "game": game, "sport": sport,
                 "action": "BUY_ERROR", "market_slug": market_slug, "intent": intent,
                 "buy_price": f"{buy_price:.4f}", "sell_price": "", "quantity": config.quantity,
                 "gross_spread": f"{gross_spread:.4f}", "profit": "",
@@ -303,7 +307,7 @@ async def _execute_trade(
     # Log BUY (skip if already logged via position-check path)
     if buy_order_id != "position-check":
         _log_execution({
-            "timestamp": now.isoformat(), "game": game, "sport": sport,
+            "arb_id": arb_id, "timestamp": now.isoformat(), "game": game, "sport": sport,
             "action": "BUY", "market_slug": market_slug, "intent": intent,
             "buy_price": f"{buy_price:.4f}", "sell_price": "", "quantity": config.quantity,
             "gross_spread": f"{gross_spread:.4f}", "profit": "",
@@ -453,7 +457,7 @@ async def _execute_trade(
         )
 
     _log_execution({
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "arb_id": arb_id, "timestamp": datetime.now(timezone.utc).isoformat(),
         "game": game, "sport": sport,
         "action": f"SELL_{exit_reason.upper()}",
         "market_slug": market_slug, "intent": sell_intent,

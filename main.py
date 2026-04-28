@@ -174,6 +174,7 @@ async def _check_arbs() -> None:
                 opp=opp,
                 opener=t.opener,
                 arb_key=str(_arb_key(opp)),
+                arb_id=t.first_seen.isoformat(),
                 poly_by_token=poly_by_token,
             )
     for t in closed_3:
