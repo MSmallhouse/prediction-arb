@@ -69,16 +69,21 @@ Single-leg convergence: buy cheap on Poly when Kalshi opens an arb. Place maker 
 
 **`only_kalshi_opener`** = True — only execute when Kalshi opened (77-83% of arbs, higher convergence rate).
 
+**`min_buy_price`** = 15c — skip teams below 15c. At extreme prices, arbs are game-ending speed differences, not real mispricings. Prevents buying teams heading to 0c.
+
+**`max_buy_price`** = 85c — same issue on the other side.
+
 ### Executor Filters
 
-Kalshi opener only, 4%+ gross, in-game (≤180min to pitch), poly depth > 0.
+Kalshi opener only, 4%+ gross, in-game (≤180min to pitch), poly depth > 0, buy price 15c-85c.
 
 ### Critical Implementation Details
 
-- **BUY_SHORT price inversion**: polymarket.us `price` field for SHORT = long-side price. Send `1 - yes_ask`.
-- **Ghost fills**: `create()` returns `{id, executions}` only. `retrieve(id)` may return "not found" if order filled and was purged. Now checks `portfolio.positions()` as fallback.
-- **max_trades=1**: only counts maker fills (convergence). Taker exits don't count — executor keeps trying.
-- **Event-driven monitoring**: WS ticks set `asyncio.Event`, no polling.
+- **BUY_SHORT price inversion**: polymarket.us `price` field for SHORT = long-side price. Executor sends `1 - yes_ask` for SHORT intents. Same inversion for SELL_SHORT.
+- **Ghost fills**: `create()` returns `{id, executions}` only. `retrieve(id)` may return "not found" if order filled and was purged. Now checks `portfolio.positions()` as fallback. Duplicate BUY log prevented via `order_id == "position-check"` guard.
+- **max_trades=1**: only counts maker fills (convergence). Taker exits and buy failures don't count — executor keeps trying.
+- **Event-driven monitoring**: WS ticks call `executor.on_price_update()` → sets `asyncio.Event` → monitor wakes instantly. No polling.
+- **Opener caveat**: `opener` field = which platform ticked most recently, NOT which diverged from fair value. Works 88% of the time but fails on game-ending moments where both platforms race to 0c/100c. Price range filter (15c-85c) mitigates this.
 
 **⚠️ IMPORTANT — Scaling bug (not yet fixed):**
 IOC allows partial fills. Maker sell MUST use actual `cumQuantity` from fill, NOT `config.quantity`. Fix before increasing quantity above 1.
