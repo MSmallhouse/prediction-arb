@@ -1,121 +1,103 @@
 # prediction-arb
 
-Cross-platform prediction market arbitrage scanner. Kalshi vs Polymarket US on MLB/NBA/NHL game-winner markets.
+Cross-platform prediction market arbitrage scanner + Strategy B executor. Kalshi vs Polymarket US on MLB/NBA/NHL game-winner markets.
 
 ## Architecture
 
 ```
-main.py                    — event-driven WS run loop, REST discovery every 60min
-config.py                  — fee constants, tax rates, thresholds, team name maps
-arb_detector.py            — match markets, compute spreads (YES/NO optimization)
-arb_tracker.py             — OPEN/CLOSE duration tracking, CSV logging
-arb_verifier.py            — REST verification (built but removed from pipeline — too slow)
-scrapers/kalshi.py         — Kalshi REST scraper (KXMLBGAME + KXNBAGAME + KXNHLGAME)
-scrapers/kalshi_ws.py      — Kalshi orderbook_delta WS (RSA-PSS auth, local book state)
-scrapers/kalshi_orders.py  — Kalshi FOK order placement (built, auth verified, $10 balance)
-scrapers/polymarket_us.py  — Polymarket US REST discovery (polymarket-us SDK)
+main.py                      — event-driven WS run loop, REST discovery every 60min
+config.py                    — fee constants, tax rates, thresholds, team name maps
+arb_detector.py              — match markets, compute spreads (YES/NO optimization)
+arb_tracker.py               — OPEN/CLOSE duration tracking, CSV logging
+convergence_tracker.py       — 60s post-arb price tracking for Strategy B analysis
+executor.py                  — Strategy B live execution (buy on Poly, maker sell, timeout exit)
+scrapers/kalshi.py           — Kalshi REST scraper (KXMLBGAME + KXNBAGAME + KXNHLGAME)
+scrapers/kalshi_ws.py        — Kalshi orderbook_delta WS (RSA-PSS auth, local book state)
+scrapers/kalshi_orders.py    — Kalshi FOK order placement (built, auth verified, $10 balance)
+scrapers/polymarket_us.py    — Polymarket US REST discovery (polymarket-us SDK, offset caching)
 scrapers/polymarket_us_ws.py — Polymarket US WS (ED25519 auth, raw websockets)
-scrapers/polymarket.py     — OLD polymarket.com scraper (retained for PolymarketMarket dataclass + slug derivation)
-scrapers/polymarket_ws.py  — OLD polymarket.com WS (not used)
-scrapers/poly_orders.py    — Polymarket order stub (needs polymarket-us SDK rewrite)
+scrapers/polymarket.py       — retained for PolymarketMarket dataclass + slug derivation only
 ```
 
-## Two Platforms
+## Platforms
 
-**Kalshi** — CFTC-regulated US exchange. REST + orderbook_delta WS. RSA-PSS auth.
-**Polymarket US** (`polymarket.us`) — separate CFTC-regulated platform (QCX LLC). NOT polymarket.com. ED25519 auth. Mobile app account = "fat.lobster". API keys from `polymarket.us/developer`.
-
-polymarket.com blocks US trading entirely. Prices between .com and .us are within 1c (likely same or arbed pools), but we can only trade on .us.
+**Kalshi** — CFTC-regulated. REST + orderbook_delta WS. RSA-PSS auth. Maker fee = 25% of taker.
+**Polymarket US** (`polymarket.us`) — CFTC-regulated (QCX LLC). ED25519 auth. Maker fee = 0. Account = "fat.lobster". Balance ~$70.
 
 ## Discovery Flow
 
-1. Kalshi: paginated `GET /events?with_nested_markets=true` per series (MLB/NBA/NHL)
+1. Kalshi: paginated `GET /events?with_nested_markets=true` per series
 2. Derive slugs from Kalshi tickers: `KXMLBGAME-26APR241915PHIATL` → `mlb-phi-atl-2026-04-24`
-3. Polymarket US: `client.events.list({series_id})` via SDK, find `sportsMarketType == "moneyline"`, match by slug (strip `aec-` prefix from polymarket.us slug)
-4. Each polymarket.us game → TWO `PolymarketMarket` objects (long team + short team) with synthetic token IDs
-5. Subscribe WS: Kalshi by market_ticker (orderbook_delta), Poly US by market_slug (market_data)
+3. Polymarket US: `client.events.list({series_id})`, find `sportsMarketType == "moneyline"`, match by slug (strip `aec-` prefix). Team names normalized via `_normalize_poly_team()`.
+4. Each game → TWO `PolymarketMarket` objects (long + short) with synthetic token IDs
+5. WS: Kalshi `orderbook_delta` by market_ticker, Poly US `market_data` by market_slug
 
-Series IDs: MLB 2026 = 15, NBA 2025 = 4, NHL 2025 = 6. Offset caching for fast pagination (~8s vs 33s).
-
-## WebSocket Channels
-
-**Kalshi `orderbook_delta`** (replaced `ticker` channel — ticker had ~1-2s lag and no NO prices):
-- Snapshot + delta protocol. Local `_MarketBook` per market.
-- `yes_ask = 1 - max(no_levels)`, `no_ask = 1 - max(yes_levels)` (Kalshi's complementary book model)
-- Seq gap detection → auto re-snapshot
-- Fires callback with: `yes_ask, yes_bid, no_ask, no_bid, yes_ask_size, no_ask_size`
-
-**Polymarket US `market_data`** (full book snapshots, NOT deltas):
-- `wss://api.polymarket.us/v1/ws/markets`, ED25519 auth headers
-- Subscribe by market slug. One slug = one game = both teams' prices.
-- `long_ask = offers[0].px`, `short_ask = 1 - bids[0].px`
-- Only fires callback when best prices change (filters deep-book noise)
+Series IDs: MLB 2026 = 15, NBA 2025 = 4, NHL 2025 = 6.
 
 ## Arb Detection
 
-4 Kalshi order books per game (Team A YES/NO, Team B YES/NO). YES on Team A = NO on Team B (same payout). Pick cheaper. Both prices now from real-time `orderbook_delta` channel.
+4 Kalshi order books per game. YES/NO optimization picks cheaper side. Both prices from real-time `orderbook_delta`.
 
 ```
-For each direction:
-  p1 = min(k_market.yes_ask, opp_k_market.no_ask)  — cheapest Kalshi exposure
-  p2 = poly_market.yes_ask                          — Polymarket cost
-  gross = 1 - p1 - p2
+p1 = min(k_market.yes_ask, opp_k_market.no_ask)
+p2 = poly_market.yes_ask
+gross = 1 - p1 - p2
 ```
-
-`_arb_key = (event_slug, k_market.market_ticker, poly_token_id)` — direction-stable regardless of YES/NO choice.
 
 ## Fee Model
 
 ```python
-kalshi_fee = 0.07 * P * (1 - P)    # taker per contract
-poly_fee   = 0.05 * P * (1 - P)    # polymarket.us fee (NOT 0.03 — that was polymarket.com)
-tax_rate   = 0.2855                 # federal 24% + Utah 4.55%
+kalshi_taker  = 0.07 * P * (1 - P)    # peaks 1.75c at P=0.5
+kalshi_maker  = 0.0175 * P * (1 - P)   # 25% of taker, peaks 0.44c
+poly_taker    = 0.05 * P * (1 - P)     # peaks 1.25c at P=0.5
+poly_maker    = 0                       # free (confirmed)
 ```
 
-Combined ceiling at P=0.5: Kalshi 1.75¢ + Poly 1.25¢ = **3.0¢ per $1 payout**. MIN_GROSS_SPREAD = 3%.
+## Execution — Strategy B (live)
 
-**NOTE:** `POLY_SPORTS_FEE_COEFF` in config.py still says 0.03 — needs updating to 0.05 (Piece 4 pending).
+Single-leg convergence: buy cheap on Poly when Kalshi opens an arb. Place maker sell at target. Monitor via WS. Exit on convergence, timeout, or price drop.
 
-## Team Name Mapping
+### Tunable Variables
 
-All maps in `config.py`. Sport-specific tables required (abbreviations overlap).
+**`sell_target_offset`** = 5c — maker sell at buy_price + 5c. Higher = more profit per fill but lower fill rate. Optimal from n=70 convergence data. Re-evaluate with more data.
 
-- **MLB**: Kalshi `yes_sub_title` = city name. Poly uses full team names.
-- **NBA**: Kalshi = city name. Poly = short nicknames.
-- **NHL**: Kalshi = `"{ABBR} {Nickname}"`. Poly = short nicknames.
+**`timeout_seconds`** = 15s — cancel maker sell and taker exit at bid. Convergence window passes by ~15s. Longer = price drifts against us.
 
-Abbreviation quirks (polymarket.us, confirmed 2026-04-24): `ath` (Athletics), `az` (Diamondbacks), `gs` (Warriors), `no` (Pelicans), `ny` (Knicks), `pho` (Suns), `sa` (Spurs), `cgy` (Flames), `la` (Kings), `nj` (Devils), `nas` (Predators), `uta` (Utah HC), `veg` (Golden Knights), `was` (Capitals).
+**`price_drop_threshold`** = 5c — taker exit if ask drops 5c below buy. Based on limited n=17 drawdown data. Most winners never draw down at all. Re-evaluate.
 
-## Key Data Findings (n=141 arbs at 4%+, n=265 at 3%+)
+**`min_gross_spread`** = 4% — minimum arb gross to trigger execution.
 
-- Kalshi is the opener ~87% of the time (reprices first → creates the arb)
-- Median arb duration: 158ms (4%+), 176ms (3%+)
-- Pre-game arbs: 8-1925s duration but thin books (depth 4-359 contracts)
-- In-game arbs: sub-second but deep books (depth up to 192k contracts)
-- Inverse spread/duration correlation: 4% arbs avg 658ms, 10%+ arbs avg 830ms
-- REST verification proved unreliable — REST cache lags WS by seconds. Removed from pipeline.
+**`only_kalshi_opener`** = True — only execute when Kalshi opened (77-83% of arbs, higher convergence rate).
 
-## Execution — Strategy B (live, single-leg convergence)
+### Executor Filters
 
-Buy cheap on Poly when Kalshi opens an arb. Place maker sell at target. Monitor via WS. Exit on convergence, timeout, or price drop.
+Kalshi opener only, 4%+ gross, in-game (≤180min to pitch), poly depth > 0.
 
-- **Executor**: `executor.py`. Enabled in `main.py` on startup. `max_trades=1` for testing (only counts maker fills).
-- **Current settings**: sell_target = buy + 5c, timeout = 15s, drop_threshold = 5c. Based on n=70 convergence data.
-- **BUY_SHORT price inversion**: polymarket.us `price` field for SHORT orders = long-side price. Executor sends `1 - yes_ask` for SHORT intents.
-- **Ghost fill handling**: `create()` returns `{id, executions}`, not fill status. Must call `retrieve(id)`. If "Order not found", check `portfolio.positions()` — order may have filled and been purged.
-- **Maker fees = 0** on polymarket.us (confirmed). Taker fee = `0.05 * P * (1-P)`.
+### Critical Implementation Details
+
+- **BUY_SHORT price inversion**: polymarket.us `price` field for SHORT = long-side price. Send `1 - yes_ask`.
+- **Ghost fills**: `create()` returns `{id, executions}` only. `retrieve(id)` may return "not found" if order filled and was purged. Now checks `portfolio.positions()` as fallback.
+- **max_trades=1**: only counts maker fills (convergence). Taker exits don't count — executor keeps trying.
+- **Event-driven monitoring**: WS ticks set `asyncio.Event`, no polling.
 
 **⚠️ IMPORTANT — Scaling bug (not yet fixed):**
-When scaling quantity above 1, IOC allows partial fills (e.g., request 50, get 10). The maker sell MUST use the actual `cumQuantity` from the fill response, NOT `config.quantity`. Currently hardcoded to `config.quantity`. Fix this before increasing quantity above 1 — otherwise we'll try to sell contracts we don't own.
+IOC allows partial fills. Maker sell MUST use actual `cumQuantity` from fill, NOT `config.quantity`. Fix before increasing quantity above 1.
 
-**Other execution notes:**
-- **Kalshi order client built** (`scrapers/kalshi_orders.py`). Auth verified, $10 balance.
-- **VPS near both platforms** — US East gets <10ms to both (Poly=Cloudflare, Kalshi=CloudFront).
-- **In-flight guard**: prevents duplicate fires on arb flickering.
-- **Cooldown strategy** — proposed but needs fill data to calibrate.
+## Key Data (n=801 arbs at 4%+, n=70 convergence tracked)
+
+- Kalshi opener: 77% MLB, 77% NBA, 83% NHL
+- Median arb duration: 85ms MLB, 33ms NBA, 97ms NHL
+- Strategy B profitable: 88% MLB, 87% NBA, 88% NHL
+- EV per arb: 10.0c MLB, 6.7c NBA, 12.2c NHL
+- Convergence (Poly moves up): 66% MLB, 50% NBA, 79% NHL
+- Time to first profitable exit: median 385ms (75% within 1s)
+- Best exit timing: median 10.3s
+- From home: 37% of arbs last >145ms (buy could fill). 62% too fast.
+- From VPS: 66% viable (~50ms setup).
 
 ## Output Files
 
-- `arb_durations_3.csv` — all arbs ≥ 3% gross (CSV only)
-- `arb_durations_4.csv` — arbs ≥ 4% gross (console + CSV)
-- Columns: `event, game, sport, gross_spread, net_pretax, first_seen, closed_at, duration_seconds, peak_gross, opener, minutes_to_first_pitch, kalshi_team, kalshi_side, poly_team, kalshi_ask, kalshi_bid, poly_ask, poly_bid, kalshi_oi, kalshi_vol_24h, poly_liquidity, game_datetime, kalshi_depth`
+- `arb_durations_3.csv` / `arb_durations_4.csv` — arb detection log (OPEN/CLOSE events)
+- `convergence_log.csv` — 60s post-arb price tracking (Poly + Kalshi ticks)
+- `executions.csv` — live trade log (BUY, SELL, errors, profit/loss)
+- Columns in arb_durations: `event, game, sport, gross_spread, net_pretax, first_seen, closed_at, duration_seconds, peak_gross, opener, minutes_to_first_pitch, kalshi_team, kalshi_side, poly_team, kalshi_ask, kalshi_bid, poly_ask, poly_bid, kalshi_oi, kalshi_vol_24h, game_datetime, kalshi_depth, poly_depth`
