@@ -199,15 +199,21 @@ async def _execute_trade(
         )
         buy_latency = (time.monotonic() - t_start) * 1000
 
-        order = result.get("order", result)
-        buy_order_id = order.get("id", "")
+        # create() returns just {id, executions} — need retrieve() for fill status
+        buy_order_id = result.get("id", "")
+        if buy_order_id:
+            order_detail = await asyncio.to_thread(client.orders.retrieve, buy_order_id)
+            order = order_detail.get("order", order_detail)
+        else:
+            order = result
+
         state = order.get("state", "")
         cum_qty = order.get("cumQuantity", 0)
 
         log.info("  BUY result: id=%s state=%s cumQty=%s latency=%.0fms",
                  buy_order_id, state, cum_qty, buy_latency)
 
-        if cum_qty == 0 or state in ("ORDER_STATE_CANCELLED", "ORDER_STATE_REJECTED"):
+        if cum_qty == 0 or state in ("ORDER_STATE_CANCELLED", "ORDER_STATE_REJECTED", "ORDER_STATE_NEW"):
             log.info("  BUY did not fill — aborting")
             _log_execution({
                 "timestamp": now.isoformat(), "game": game, "sport": sport,
@@ -260,8 +266,7 @@ async def _execute_trade(
                 "participateDontInitiate": True,
             },
         )
-        order = result.get("order", result)
-        sell_order_id = order.get("id", "")
+        sell_order_id = result.get("id", "")
         log.info("  SELL placed: id=%s target=%.3f (maker)", sell_order_id, sell_target)
     except Exception as exc:
         log.error("  SELL placement failed: %s — will exit at market on timeout", exc)
@@ -319,8 +324,20 @@ async def _execute_trade(
     hold_time_ms = (time.monotonic() - buy_time) * 1000
 
     # ── Step 4: Exit ───────────────────────────────────────────────────
+    if exit_reason == "converged" and sell_order_id:
+        # Verify the maker sell actually filled
+        try:
+            order_detail = await asyncio.to_thread(client.orders.retrieve, sell_order_id)
+            o = order_detail.get("order", order_detail)
+            if o.get("cumQuantity", 0) == 0:
+                log.info("  Bid reached target but maker sell didn't fill — treating as timeout")
+                exit_reason = "timeout"
+        except Exception:
+            exit_reason = "timeout"
+
     if exit_reason == "converged":
         sell_fee = 0.0  # maker = free
+        sell_price = sell_target
         profit = sell_target - buy_price - buy_fee
         log.info(
             "\n\n  CONVERGED  %s  profit=%.4f  hold=%dms\n",
