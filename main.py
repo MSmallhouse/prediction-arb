@@ -28,6 +28,7 @@ from scrapers.kalshi_ws import KalshiWSClient
 from arb_detector import find_arbs
 from arb_tracker import ArbTracker, log_arb_duration
 import convergence_tracker
+import executor
 
 load_dotenv()
 
@@ -57,6 +58,7 @@ tracker_4 = ArbTracker()
 
 poly_ws: PolymarketUSWSClient | None = None
 kalshi_ws: KalshiWSClient | None = None
+_poly_us_client = None  # PolymarketUS client, set in _discovery_loop
 _ready_after: datetime | None = None
 _last_tick: datetime | None = None
 _last_logged_spread: float = -999.0
@@ -164,6 +166,16 @@ async def _check_arbs() -> None:
             now=now,
         )
         log_arb_duration(t, "OPEN", LOG_FILE_3)
+        # Strategy B execution
+        if _poly_us_client is not None:
+            from arb_tracker import _arb_key
+            await executor.maybe_execute(
+                client=_poly_us_client,
+                opp=opp,
+                opener=t.opener,
+                arb_key=str(_arb_key(opp)),
+                poly_by_token=poly_by_token,
+            )
     for t in closed_3:
         log_arb_duration(t, "CLOSE", LOG_FILE_3)
 
@@ -226,6 +238,7 @@ async def _on_poly_us_price(
         long_market.yes_bid = long_bid
         long_market.yes_ask_size = long_ask_size
         long_market.fetched_at = now
+        executor.on_price_update(long_token, long_ask, long_bid)
 
     short_market = poly_by_token.get(short_token)
     if short_market is not None:
@@ -233,6 +246,7 @@ async def _on_poly_us_price(
         short_market.yes_ask = short_ask
         short_market.yes_bid = short_bid
         short_market.yes_ask_size = short_ask_size
+        executor.on_price_update(short_token, short_ask, short_bid)
         short_market.fetched_at = now
 
     # Feed convergence tracker
@@ -348,14 +362,23 @@ async def _discovery_loop(session: aiohttp.ClientSession) -> None:
     Hourly REST discovery. On first run, populates stores and launches WS clients.
     On subsequent runs, subscribes new markets to existing WS connections.
     """
-    global poly_ws, kalshi_ws, _ready_after
+    global poly_ws, kalshi_ws, _ready_after, _poly_us_client
 
-    # Initialize polymarket.us SDK client (sync, used for REST discovery)
+    # Initialize polymarket.us SDK client (sync, used for REST discovery + order placement)
     from polymarket_us import PolymarketUS
     poly_us_client = PolymarketUS(
         key_id=os.environ.get("POLYMARKET_API_KEY_ID", ""),
         secret_key=os.environ.get("POLYMARKET_PRIVATE_KEY", ""),
     )
+    _poly_us_client = poly_us_client
+
+    # Strategy B execution — enabled for 1 trade, then auto-disables
+    executor.config.enabled = True
+    executor.config.max_trades = 1
+    log.info("Strategy B executor ENABLED (max_trades=1, min_gross=%.1f%%, timeout=%ds, drop=%.0fc)",
+             executor.config.min_gross_spread * 100,
+             executor.config.timeout_seconds,
+             executor.config.price_drop_threshold * 100)
 
     while True:
         log.info("Running market discovery...")

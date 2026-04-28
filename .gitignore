@@ -17,3 +17,4 @@ venv/
 .DS_Store
 scanner.log
 convergence_log.csv
+executions.csv
