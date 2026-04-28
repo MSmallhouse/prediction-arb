@@ -60,8 +60,8 @@ class ExecutionConfig:
     max_minutes_to_pitch: float = 180   # only in-game or close pre-game
     min_poly_depth: float = 1           # minimum contracts at ask
     quantity: int = 1                   # contracts per trade
-    sell_target_offset: float = 0.02    # sell at buy_price + this
-    timeout_seconds: float = 30.0      # bail after this many seconds
+    sell_target_offset: float = 0.05    # sell at buy_price + 5c (was 2c, n=70 data shows +5c optimal)
+    timeout_seconds: float = 15.0      # bail after 15s (was 30s, convergence window passes by then)
     price_drop_threshold: float = 0.05  # bail if poly_ask drops this much below buy (5c, limited data)
     only_kalshi_opener: bool = True     # only fire when Kalshi opened the arb
     max_trades: int = 1                 # stop executing after this many completed trades (0 = unlimited)
