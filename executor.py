@@ -135,8 +135,13 @@ async def maybe_execute(
     poly_token = opp.poly_market.token_id
     if ":long" in poly_token:
         intent = "ORDER_INTENT_BUY_LONG"
+        order_price = opp.poly_market.yes_ask  # long price directly
     else:
         intent = "ORDER_INTENT_BUY_SHORT"
+        # BUY_SHORT price field = the LONG side price (inverted)
+        # Our yes_ask for short = 1 - long_bid. To buy short, send the long price.
+        # long_ask ≈ 1 - short_bid, so send 1 - yes_ask as the limit
+        order_price = round(1.0 - opp.poly_market.yes_ask, 2)
 
     market_slug = poly_token.rsplit(":", 1)[0] if ":" in poly_token else poly_token
     sport = "MLB" if "mlb" in opp.poly_market.event_slug else ("NBA" if "nba" in opp.poly_market.event_slug else "NHL")
@@ -151,7 +156,8 @@ async def maybe_execute(
             sport=sport,
             market_slug=market_slug,
             intent=intent,
-            buy_price=opp.poly_market.yes_ask,
+            buy_price=opp.poly_market.yes_ask,  # our internal price (what we think we're paying)
+            order_price=order_price,              # price to send to API (inverted for SHORT)
             gross_spread=opp.gross_spread,
             poly_token_id=poly_token,
             poly_by_token=poly_by_token,
@@ -168,6 +174,7 @@ async def _execute_trade(
     market_slug: str,
     intent: str,
     buy_price: float,
+    order_price: float,
     gross_spread: float,
     poly_token_id: str,
     poly_by_token: dict,
@@ -192,7 +199,7 @@ async def _execute_trade(
                 "marketSlug": market_slug,
                 "intent": intent,
                 "type": "ORDER_TYPE_LIMIT",
-                "price": {"value": str(buy_price), "currency": "USD"},
+                "price": {"value": str(order_price), "currency": "USD"},
                 "quantity": config.quantity,
                 "tif": "TIME_IN_FORCE_FILL_OR_KILL",
             },
@@ -299,6 +306,9 @@ async def _execute_trade(
 
     # ── Step 2: Place maker sell at target ──────────────────────────────
     sell_intent = "ORDER_INTENT_SELL_LONG" if "LONG" in intent else "ORDER_INTENT_SELL_SHORT"
+    is_short = "SHORT" in intent
+    # For SELL_SHORT, price to API = long-side price = 1 - our_sell_target
+    sell_order_price = round(1.0 - sell_target, 2) if is_short else sell_target
     sell_order_id = ""
     try:
         result = await asyncio.to_thread(
@@ -307,7 +317,7 @@ async def _execute_trade(
                 "marketSlug": market_slug,
                 "intent": sell_intent,
                 "type": "ORDER_TYPE_LIMIT",
-                "price": {"value": str(sell_target), "currency": "USD"},
+                "price": {"value": str(sell_order_price), "currency": "USD"},
                 "quantity": config.quantity,
                 "tif": "TIME_IN_FORCE_GOOD_TILL_CANCEL",
                 "participateDontInitiate": True,
@@ -404,6 +414,8 @@ async def _execute_trade(
         current_bid = market.yes_bid if market else 0
 
         if current_bid > 0:
+            # For SELL_SHORT, invert the price for the API
+            exit_order_price = round(1.0 - current_bid, 2) if is_short else current_bid
             try:
                 await asyncio.to_thread(
                     client.orders.create,
@@ -411,7 +423,7 @@ async def _execute_trade(
                         "marketSlug": market_slug,
                         "intent": sell_intent,
                         "type": "ORDER_TYPE_LIMIT",
-                        "price": {"value": str(current_bid), "currency": "USD"},
+                        "price": {"value": str(exit_order_price), "currency": "USD"},
                         "quantity": config.quantity,
                         "tif": "TIME_IN_FORCE_FILL_OR_KILL",
                     },
