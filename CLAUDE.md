@@ -95,15 +95,24 @@ Abbreviation quirks (polymarket.us, confirmed 2026-04-24): `ath` (Athletics), `a
 - Inverse spread/duration correlation: 4% arbs avg 658ms, 10%+ arbs avg 830ms
 - REST verification proved unreliable — REST cache lags WS by seconds. Removed from pipeline.
 
-## Execution Strategy (not yet implemented)
+## Execution — Strategy B (live, single-leg convergence)
 
-- **Send Poly first** (follower platform, stale price, about to correct). If fills → send Kalshi (opener, stable price). If not → no exposure.
-- **FOK orders on both platforms** — fills at exact price or cancels, zero partial risk.
-- **VPS near Polymarket** if opener pattern holds — minimize follower fill latency.
+Buy cheap on Poly when Kalshi opens an arb. Place maker sell at target. Monitor via WS. Exit on convergence, timeout, or price drop.
+
+- **Executor**: `executor.py`. Enabled in `main.py` on startup. `max_trades=1` for testing (only counts maker fills).
+- **Current settings**: sell_target = buy + 5c, timeout = 15s, drop_threshold = 5c. Based on n=70 convergence data.
+- **BUY_SHORT price inversion**: polymarket.us `price` field for SHORT orders = long-side price. Executor sends `1 - yes_ask` for SHORT intents.
+- **Ghost fill handling**: `create()` returns `{id, executions}`, not fill status. Must call `retrieve(id)`. If "Order not found", check `portfolio.positions()` — order may have filled and been purged.
+- **Maker fees = 0** on polymarket.us (confirmed). Taker fee = `0.05 * P * (1-P)`.
+
+**⚠️ IMPORTANT — Scaling bug (not yet fixed):**
+When scaling quantity above 1, IOC allows partial fills (e.g., request 50, get 10). The maker sell MUST use the actual `cumQuantity` from the fill response, NOT `config.quantity`. Currently hardcoded to `config.quantity`. Fix this before increasing quantity above 1 — otherwise we'll try to sell contracts we don't own.
+
+**Other execution notes:**
 - **Kalshi order client built** (`scrapers/kalshi_orders.py`). Auth verified, $10 balance.
-- **Polymarket order client needs rewrite** for polymarket.us SDK (`POST /v1/orders` with `TIME_IN_FORCE_FILL_OR_KILL`).
-- **Cooldown strategy** (don't fire until arb persists N ms) — proposed but needs fill data to calibrate.
-- **Start with pre-game arbs** — 30-60s windows, latency irrelevant, $25/platform sufficient for 100 attempts.
+- **VPS near both platforms** — US East gets <10ms to both (Poly=Cloudflare, Kalshi=CloudFront).
+- **In-flight guard**: prevents duplicate fires on arb flickering.
+- **Cooldown strategy** — proposed but needs fill data to calibrate.
 
 ## Output Files
 
