@@ -157,6 +157,7 @@ async def _check_arbs() -> None:
             poly_team=opp.poly_market.team,
             poly_token_id=poly_token,
             market_slug=market_slug,
+            kalshi_market_ticker=opp.kalshi_order_market.market_ticker,
             poly_ask=opp.poly_market.yes_ask,
             poly_bid=opp.poly_market.yes_bid,
             poly_depth=opp.poly_market.yes_ask_size,
@@ -192,6 +193,10 @@ async def _on_kalshi_price(
     market.no_ask_size = no_ask_size
     market.fetched_at = datetime.now(timezone.utc)
     _last_tick = market.fetched_at
+
+    # Feed convergence tracker with Kalshi price updates
+    convergence_tracker.on_kalshi_tick(market_ticker, yes_ask, market.fetched_at)
+
     await _check_arbs()
 
 

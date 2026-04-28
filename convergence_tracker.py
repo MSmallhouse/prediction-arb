@@ -28,14 +28,15 @@ _FIELDNAMES = [
     "sport",
     "opener",           # "kalshi" or "poly"
     "arb_gross",        # gross spread at detection
-    "kalshi_ask",       # Kalshi price at arb detection (fixed reference)
+    "kalshi_ask_initial", # Kalshi price at arb detection (fixed reference)
     "kalshi_side",      # YES or NO
     "poly_team",        # which Poly team we'd buy
     "t_offset_ms",      # milliseconds since arb detection
     "poly_ask",         # Poly ask at this tick
     "poly_bid",         # Poly bid at this tick (our exit price)
     "poly_depth",       # contracts at best ask
-    "source",           # "poly" or "kalshi" — which WS fired this tick
+    "kalshi_ask_now",   # current Kalshi ask (tracks reversion)
+    "source",           # "initial", "poly", or "kalshi" — which WS fired this tick
 ]
 
 
@@ -46,11 +47,12 @@ class _ActiveTracker:
     sport: str
     opener: str
     arb_gross: float
-    kalshi_ask: float        # fixed at detection time
+    kalshi_ask: float        # updated on each Kalshi tick
     kalshi_side: str
     poly_team: str
     poly_token_id: str       # which poly token to watch
     market_slug: str         # which WS slug to watch
+    kalshi_market_ticker: str  # Kalshi market ticker for the order market
     start_time: datetime
     rows: list = field(default_factory=list)
 
@@ -60,6 +62,9 @@ _active: dict[str, _ActiveTracker] = {}
 
 # Also index by market_slug (one slug can have two tokens — long and short)
 _active_by_slug: dict[str, list[str]] = {}  # slug → [token_ids]
+
+# Index by kalshi_market_ticker for Kalshi tick lookup
+_active_by_kalshi: dict[str, list[str]] = {}  # kalshi_ticker → [token_ids]
 
 
 def start_tracking(
@@ -73,6 +78,7 @@ def start_tracking(
     poly_team: str,
     poly_token_id: str,
     market_slug: str,
+    kalshi_market_ticker: str,
     poly_ask: float,
     poly_bid: float,
     poly_depth: float,
@@ -94,12 +100,14 @@ def start_tracking(
         poly_team=poly_team,
         poly_token_id=poly_token_id,
         market_slug=market_slug,
+        kalshi_market_ticker=kalshi_market_ticker,
         start_time=now,
     )
 
     # Log initial state at t=0
     tracker.rows.append({
         "t_offset_ms": 0,
+        "kalshi_ask_now": kalshi_ask,
         "poly_ask": poly_ask,
         "poly_bid": poly_bid,
         "poly_depth": poly_depth,
@@ -108,6 +116,7 @@ def start_tracking(
 
     _active[poly_token_id] = tracker
     _active_by_slug.setdefault(market_slug, []).append(poly_token_id)
+    _active_by_kalshi.setdefault(kalshi_market_ticker, []).append(poly_token_id)
 
 
 def on_poly_tick(
@@ -144,6 +153,7 @@ def on_poly_tick(
 
         tracker.rows.append({
             "t_offset_ms": round(elapsed_ms),
+            "kalshi_ask_now": tracker.kalshi_ask,
             "poly_ask": poly_ask,
             "poly_bid": poly_bid,
             "poly_depth": poly_depth,
@@ -152,30 +162,32 @@ def on_poly_tick(
 
 
 def on_kalshi_tick(
-    poly_token_id: str,
+    market_ticker: str,
     kalshi_ask: float,
     now: datetime,
 ) -> None:
-    """Called on Kalshi tick for a market with an active tracker.
-    Logs the Kalshi price so we can see if Kalshi reverted."""
-    tracker = _active.get(poly_token_id)
-    if tracker is None:
+    """Called on Kalshi tick. Logs Kalshi price for active trackers on this market."""
+    token_ids = _active_by_kalshi.get(market_ticker)
+    if not token_ids:
         return
 
-    elapsed_ms = (now - tracker.start_time).total_seconds() * 1000
+    for token_id in list(token_ids):
+        tracker = _active.get(token_id)
+        if tracker is None:
+            continue
 
-    # Get current Poly prices from the last row
-    last = tracker.rows[-1] if tracker.rows else {}
+        elapsed_ms = (now - tracker.start_time).total_seconds() * 1000
+        last = tracker.rows[-1] if tracker.rows else {}
 
-    tracker.rows.append({
-        "t_offset_ms": round(elapsed_ms),
-        "poly_ask": last.get("poly_ask", 0),
-        "poly_bid": last.get("poly_bid", 0),
-        "poly_depth": last.get("poly_depth", 0),
-        "source": "kalshi",
-    })
-    # Update the reference kalshi_ask so we can see if it moved
-    tracker.kalshi_ask = kalshi_ask
+        tracker.kalshi_ask = kalshi_ask
+        tracker.rows.append({
+            "t_offset_ms": round(elapsed_ms),
+            "kalshi_ask_now": kalshi_ask,
+            "poly_ask": last.get("poly_ask", 0),
+            "poly_bid": last.get("poly_bid", 0),
+            "poly_depth": last.get("poly_depth", 0),
+            "source": "kalshi",
+        })
 
 
 def flush_expired(now: datetime) -> int:
@@ -206,12 +218,18 @@ def _flush_one(token_id: str) -> None:
     if tracker is None:
         return
 
-    # Clean up slug index
+    # Clean up indexes
     slug_list = _active_by_slug.get(tracker.market_slug, [])
     if token_id in slug_list:
         slug_list.remove(token_id)
     if not slug_list:
         _active_by_slug.pop(tracker.market_slug, None)
+
+    kalshi_list = _active_by_kalshi.get(tracker.kalshi_market_ticker, [])
+    if token_id in kalshi_list:
+        kalshi_list.remove(token_id)
+    if not kalshi_list:
+        _active_by_kalshi.pop(tracker.kalshi_market_ticker, None)
 
     if not tracker.rows:
         return
@@ -226,6 +244,8 @@ def _flush_one(token_id: str) -> None:
         if not sport:
             sport = tracker.sport
 
+        initial_kalshi = tracker.rows[0].get("kalshi_ask_now", tracker.kalshi_ask) if tracker.rows else tracker.kalshi_ask
+
         for row in tracker.rows:
             writer.writerow({
                 "arb_id": tracker.arb_id,
@@ -233,13 +253,14 @@ def _flush_one(token_id: str) -> None:
                 "sport": sport,
                 "opener": tracker.opener,
                 "arb_gross": f"{tracker.arb_gross:.4f}",
-                "kalshi_ask": f"{tracker.kalshi_ask:.4f}",
+                "kalshi_ask_initial": f"{initial_kalshi:.4f}",
                 "kalshi_side": tracker.kalshi_side,
                 "poly_team": tracker.poly_team,
                 "t_offset_ms": row["t_offset_ms"],
                 "poly_ask": f"{row['poly_ask']:.4f}",
                 "poly_bid": f"{row['poly_bid']:.4f}",
                 "poly_depth": f"{row['poly_depth']:.0f}",
+                "kalshi_ask_now": f"{row.get('kalshi_ask_now', initial_kalshi):.4f}",
                 "source": row["source"],
             })
 
