@@ -69,13 +69,11 @@ Single-leg convergence: buy cheap on Poly when Kalshi opens an arb. Place maker 
 
 **`only_kalshi_opener`** = True — only execute when Kalshi opened (77-83% of arbs, higher convergence rate).
 
-**`min_buy_price`** = 15c — skip teams below 15c. At extreme prices, arbs are game-ending speed differences, not real mispricings. Prevents buying teams heading to 0c.
-
-**`max_buy_price`** = 85c — same issue on the other side.
+**`min_buy_price`** = 15c — skip teams below 15c (heading to 0c, convergence = downward). No upper cap — buying 90c+ teams heading to 100c is profitable (asymmetric: more room up than down, 5/5 profitable in historical data).
 
 ### Executor Filters
 
-Kalshi opener only, 4%+ gross, in-game (≤180min to pitch), poly depth > 0, buy price 15c-85c.
+Kalshi opener only, 4%+ gross, in-game (≤180min to pitch), poly depth > 0, buy price ≥ 15c.
 
 ### Critical Implementation Details
 

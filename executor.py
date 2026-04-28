@@ -65,8 +65,8 @@ class ExecutionConfig:
     timeout_seconds: float = 15.0      # bail after 15s (was 30s, convergence window passes by then)
     price_drop_threshold: float = 0.05  # bail if poly_ask drops this much below buy (5c, limited data)
     only_kalshi_opener: bool = True     # only fire when Kalshi opened the arb
-    min_buy_price: float = 0.15         # skip teams below 15c (likely losing, game-ending arbs)
-    max_buy_price: float = 0.85         # skip teams above 85c (same issue, other side)
+    min_buy_price: float = 0.15         # skip teams below 15c (likely losing, heading to 0c)
+    max_buy_price: float = 1.00         # no upper cap — buying 90c+ teams heading to 100c is profitable
     max_trades: int = 1                 # stop executing after this many completed trades (0 = unlimited)
 
 
