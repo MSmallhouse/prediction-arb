@@ -228,17 +228,64 @@ async def _execute_trade(
             return
 
     except Exception as exc:
-        log.error("  BUY failed: %s", exc)
-        _log_execution({
-            "timestamp": now.isoformat(), "game": game, "sport": sport,
-            "action": "BUY_ERROR", "market_slug": market_slug, "intent": intent,
-            "buy_price": f"{buy_price:.4f}", "sell_price": "", "quantity": config.quantity,
-            "gross_spread": f"{gross_spread:.4f}", "profit": "",
-            "buy_fee": "", "sell_fee": "", "hold_time_ms": "", "order_id": "",
-            "poly_bid_at_exit": "", "exit_reason": "buy_error", "error": str(exc),
-        })
-        _in_flight.discard(arb_key)
-        return
+        # "Order not found" on retrieve might mean the order filled and was purged.
+        # Check positions to see if we actually hold the asset.
+        if "not found" in str(exc).lower() or "Not Found" in str(exc):
+            log.warning("  BUY retrieve failed (%s) — checking positions...", exc)
+            try:
+                positions = await asyncio.to_thread(client.portfolio.positions, {})
+                pos = positions.get("positions", {}).get(market_slug, {})
+                net_pos = int(pos.get("netPosition", 0))
+                if net_pos > 0:
+                    log.info("  POSITION FOUND: netPosition=%d — buy DID fill!", net_pos)
+                    # Continue to sell step — don't return
+                    buy_order_id = "unknown-filled"
+                    _log_execution({
+                        "timestamp": now.isoformat(), "game": game, "sport": sport,
+                        "action": "BUY", "market_slug": market_slug, "intent": intent,
+                        "buy_price": f"{buy_price:.4f}", "sell_price": "", "quantity": config.quantity,
+                        "gross_spread": f"{gross_spread:.4f}", "profit": "",
+                        "buy_fee": f"{buy_fee:.4f}", "sell_fee": "",
+                        "hold_time_ms": "", "order_id": "position-check",
+                        "poly_bid_at_exit": "", "exit_reason": "", "error": "",
+                    })
+                    # Fall through to sell step below
+                else:
+                    log.info("  No position found — buy genuinely failed")
+                    _log_execution({
+                        "timestamp": now.isoformat(), "game": game, "sport": sport,
+                        "action": "BUY_ERROR", "market_slug": market_slug, "intent": intent,
+                        "buy_price": f"{buy_price:.4f}", "sell_price": "", "quantity": config.quantity,
+                        "gross_spread": f"{gross_spread:.4f}", "profit": "",
+                        "buy_fee": "", "sell_fee": "", "hold_time_ms": "", "order_id": "",
+                        "poly_bid_at_exit": "", "exit_reason": "buy_error", "error": str(exc),
+                    })
+                    _in_flight.discard(arb_key)
+                    return
+            except Exception as pos_exc:
+                log.error("  Position check also failed: %s", pos_exc)
+                _log_execution({
+                    "timestamp": now.isoformat(), "game": game, "sport": sport,
+                    "action": "BUY_ERROR", "market_slug": market_slug, "intent": intent,
+                    "buy_price": f"{buy_price:.4f}", "sell_price": "", "quantity": config.quantity,
+                    "gross_spread": f"{gross_spread:.4f}", "profit": "",
+                    "buy_fee": "", "sell_fee": "", "hold_time_ms": "", "order_id": "",
+                    "poly_bid_at_exit": "", "exit_reason": "buy_error", "error": str(pos_exc),
+                })
+                _in_flight.discard(arb_key)
+                return
+        else:
+            log.error("  BUY failed: %s", exc)
+            _log_execution({
+                "timestamp": now.isoformat(), "game": game, "sport": sport,
+                "action": "BUY_ERROR", "market_slug": market_slug, "intent": intent,
+                "buy_price": f"{buy_price:.4f}", "sell_price": "", "quantity": config.quantity,
+                "gross_spread": f"{gross_spread:.4f}", "profit": "",
+                "buy_fee": "", "sell_fee": "", "hold_time_ms": "", "order_id": "",
+                "poly_bid_at_exit": "", "exit_reason": "buy_error", "error": str(exc),
+            })
+            _in_flight.discard(arb_key)
+            return
 
     _log_execution({
         "timestamp": now.isoformat(), "game": game, "sport": sport,
