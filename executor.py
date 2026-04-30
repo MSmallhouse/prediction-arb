@@ -50,6 +50,8 @@ _FIELDNAMES = [
     "poly_bid_at_exit",
     "exit_reason",          # converged, timeout, price_drop, no_fill, buy_error
     "error",
+    "buy_latency_ms",       # time to place buy order (create + retrieve)
+    "sell_latency_ms",      # time to place maker sell or taker exit order
 ]
 
 
@@ -240,6 +242,7 @@ async def _execute_trade(
                 "buy_fee": f"{buy_fee:.4f}", "sell_fee": "",
                 "hold_time_ms": "", "order_id": buy_order_id,
                 "poly_bid_at_exit": "", "exit_reason": "no_fill", "error": state,
+            "buy_latency_ms": f"{buy_latency:.0f}", "sell_latency_ms": "",
             })
             _in_flight.discard(arb_key)
             return
@@ -265,6 +268,7 @@ async def _execute_trade(
                         "buy_fee": f"{buy_fee:.4f}", "sell_fee": "",
                         "hold_time_ms": "", "order_id": "position-check",
                         "poly_bid_at_exit": "", "exit_reason": "", "error": "",
+                        "buy_latency_ms": "", "sell_latency_ms": "",
                     })
                     # Fall through to sell step below
                 else:
@@ -276,6 +280,7 @@ async def _execute_trade(
                         "gross_spread": f"{gross_spread:.4f}", "profit": "",
                         "buy_fee": "", "sell_fee": "", "hold_time_ms": "", "order_id": "",
                         "poly_bid_at_exit": "", "exit_reason": "buy_error", "error": str(exc),
+                "buy_latency_ms": "", "sell_latency_ms": "",
                     })
                     _in_flight.discard(arb_key)
                     return
@@ -288,6 +293,7 @@ async def _execute_trade(
                     "gross_spread": f"{gross_spread:.4f}", "profit": "",
                     "buy_fee": "", "sell_fee": "", "hold_time_ms": "", "order_id": "",
                     "poly_bid_at_exit": "", "exit_reason": "buy_error", "error": str(pos_exc),
+                    "buy_latency_ms": "", "sell_latency_ms": "",
                 })
                 _in_flight.discard(arb_key)
                 return
@@ -300,6 +306,7 @@ async def _execute_trade(
                 "gross_spread": f"{gross_spread:.4f}", "profit": "",
                 "buy_fee": "", "sell_fee": "", "hold_time_ms": "", "order_id": "",
                 "poly_bid_at_exit": "", "exit_reason": "buy_error", "error": str(exc),
+                "buy_latency_ms": "", "sell_latency_ms": "",
             })
             _in_flight.discard(arb_key)
             return
@@ -314,6 +321,7 @@ async def _execute_trade(
             "buy_fee": f"{buy_fee:.4f}", "sell_fee": "",
             "hold_time_ms": "", "order_id": buy_order_id,
             "poly_bid_at_exit": "", "exit_reason": "", "error": "",
+            "buy_latency_ms": f"{buy_latency:.0f}", "sell_latency_ms": "",
         })
 
     # ── Step 2: Place maker sell at target ──────────────────────────────
@@ -322,7 +330,9 @@ async def _execute_trade(
     # For SELL_SHORT, price to API = long-side price = 1 - our_sell_target
     sell_order_price = round(1.0 - sell_target, 2) if is_short else sell_target
     sell_order_id = ""
+    sell_latency = 0.0
     try:
+        t_sell = time.monotonic()
         result = await asyncio.to_thread(
             client.orders.create,
             {
@@ -335,8 +345,9 @@ async def _execute_trade(
                 "participateDontInitiate": True,
             },
         )
+        sell_latency = (time.monotonic() - t_sell) * 1000
         sell_order_id = result.get("id", "")
-        log.info("  SELL placed: id=%s target=%.3f (maker)", sell_order_id, sell_target)
+        log.info("  SELL placed: id=%s target=%.3f (maker) latency=%.0fms", sell_order_id, sell_target, sell_latency)
     except Exception as exc:
         log.error("  SELL placement failed: %s — will exit at market on timeout", exc)
 
@@ -429,6 +440,7 @@ async def _execute_trade(
             # For SELL_SHORT, invert the price for the API
             exit_order_price = round(1.0 - current_bid, 2) if is_short else current_bid
             try:
+                t_exit = time.monotonic()
                 await asyncio.to_thread(
                     client.orders.create,
                     {
@@ -440,6 +452,7 @@ async def _execute_trade(
                         "tif": "TIME_IN_FORCE_FILL_OR_KILL",
                     },
                 )
+                sell_latency = (time.monotonic() - t_exit) * 1000
                 sell_price = current_bid
                 sell_fee = 0.05 * sell_price * (1 - sell_price)
             except Exception as exc:
@@ -473,6 +486,8 @@ async def _execute_trade(
         "poly_bid_at_exit": f"{current_bid:.4f}",
         "exit_reason": exit_reason,
         "error": "",
+        "buy_latency_ms": f"{buy_latency:.0f}",
+        "sell_latency_ms": f"{sell_latency:.0f}",
     })
 
     _in_flight.discard(arb_key)
