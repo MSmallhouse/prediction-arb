@@ -247,14 +247,15 @@ async def _execute_trade(
         executions = result.get("executions", [])
 
         if executions:
-            # Check execution type — FILL vs CANCELED
-            exec_type = executions[0].get("type", "")
-            if "FILL" in exec_type:
+            # Check ALL executions for a FILL — synchronousExecution may return
+            # [NEW, FILL] or [FILL] depending on timing. Only need one FILL.
+            filled = any("FILL" in e.get("type", "") for e in executions)
+            if filled:
                 cum_qty = config.quantity
                 state = "ORDER_STATE_FILLED"
             else:
                 cum_qty = 0
-                state = exec_type
+                state = executions[-1].get("type", "UNKNOWN")
         else:
             # synchronousExecution returned empty executions — order likely rejected
             cum_qty = 0
