@@ -242,21 +242,25 @@ async def _execute_trade(
         # UNKNOWN state: retrieve() failed but no executions either.
         # Wait and check positions as last resort.
         if state == "UNKNOWN":
-            log.warning("  BUY state unknown — waiting 500ms then checking positions...")
-            await asyncio.sleep(0.5)
-            try:
-                positions = await asyncio.to_thread(client.portfolio.positions, {})
-                pos = positions.get("positions", {}).get(market_slug, {})
-                net_pos = int(pos.get("netPosition", 0))
-                if net_pos > 0:
-                    log.info("  POSITION FOUND after delay: netPosition=%d — buy DID fill!", net_pos)
-                    cum_qty = net_pos
-                    state = "ORDER_STATE_FILLED"
-                    buy_order_id = "position-check"
-                else:
-                    log.info("  No position after delay — buy genuinely failed")
-                    cum_qty = 0
-            except Exception:
+            # Position ledger lags behind matching engine. Check twice with delays.
+            for attempt in range(1, 3):
+                delay = 0.5 * attempt  # 500ms, then 1000ms
+                log.warning("  BUY state unknown — waiting %.0fms then checking positions (attempt %d/2)...", delay * 1000, attempt)
+                await asyncio.sleep(delay)
+                try:
+                    positions = await asyncio.to_thread(client.portfolio.positions, {})
+                    pos = positions.get("positions", {}).get(market_slug, {})
+                    net_pos = int(pos.get("netPosition", 0))
+                    if net_pos > 0:
+                        log.info("  POSITION FOUND on attempt %d: netPosition=%d — buy DID fill!", attempt, net_pos)
+                        cum_qty = net_pos
+                        state = "ORDER_STATE_FILLED"
+                        buy_order_id = "position-check"
+                        break
+                except Exception:
+                    pass
+            else:
+                log.info("  No position after 2 attempts (1.5s total) — buy genuinely failed")
                 cum_qty = 0
 
         if cum_qty == 0 or state in ("ORDER_STATE_CANCELLED", "ORDER_STATE_REJECTED", "ORDER_STATE_NEW", "ORDER_STATE_EXPIRED"):
