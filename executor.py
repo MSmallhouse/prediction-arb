@@ -218,26 +218,18 @@ async def _execute_trade(
         )
         buy_latency = (time.monotonic() - t_start) * 1000
 
-        # create() returns {id, executions}. If executions is non-empty, the order
-        # filled instantly — no need for retrieve(). This avoids the "Order not found"
-        # race condition where retrieve() and positions() both miss a fast fill.
+        # create() returns {id, executions}. On polymarket.us, executions is always
+        # empty even on fills. Use retrieve() first, fall back to positions() with delay.
         buy_order_id = result.get("id", "")
-        executions = result.get("executions", [])
 
-        if executions:
-            # Order filled — executions array has fill details
-            cum_qty = config.quantity  # IOC fills fully or not at all for qty=1
-            state = "ORDER_STATE_FILLED"
-            log.info("  BUY FILLED (from executions): id=%s latency=%.0fms", buy_order_id, buy_latency)
-        elif buy_order_id:
-            # No executions in create response — check retrieve() as fallback
+        if buy_order_id:
             try:
                 order_detail = await asyncio.to_thread(client.orders.retrieve, buy_order_id)
                 order = order_detail.get("order", order_detail)
                 state = order.get("state", "")
                 cum_qty = order.get("cumQuantity", 0)
             except Exception:
-                # retrieve() failed — order might have filled and been purged
+                # retrieve() failed — order likely filled and purged. Check positions after delay.
                 state = "UNKNOWN"
                 cum_qty = 0
         else:
