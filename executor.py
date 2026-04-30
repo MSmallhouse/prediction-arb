@@ -214,54 +214,30 @@ async def _execute_trade(
                 "price": {"value": str(order_price), "currency": "USD"},
                 "quantity": config.quantity,
                 "tif": "TIME_IN_FORCE_FILL_OR_KILL",
+                "synchronousExecution": True,
             },
         )
         buy_latency = (time.monotonic() - t_start) * 1000
 
-        # create() returns {id, executions}. On polymarket.us, executions is always
-        # empty even on fills. Use retrieve() first, fall back to positions() with delay.
         buy_order_id = result.get("id", "")
+        executions = result.get("executions", [])
 
-        if buy_order_id:
-            try:
-                order_detail = await asyncio.to_thread(client.orders.retrieve, buy_order_id)
-                order = order_detail.get("order", order_detail)
-                state = order.get("state", "")
-                cum_qty = order.get("cumQuantity", 0)
-            except Exception:
-                # retrieve() failed — order likely filled and purged. Check positions after delay.
-                state = "UNKNOWN"
-                cum_qty = 0
-        else:
-            state = ""
-            cum_qty = 0
-
-        log.info("  BUY result: id=%s state=%s cumQty=%s latency=%.0fms",
-                 buy_order_id, state, cum_qty, buy_latency)
-
-        # UNKNOWN state: retrieve() failed but no executions either.
-        # Wait and check positions as last resort.
-        if state == "UNKNOWN":
-            # Position ledger lags behind matching engine. Check twice with delays.
-            for attempt in range(1, 3):
-                delay = 0.5 * attempt  # 500ms, then 1000ms
-                log.warning("  BUY state unknown — waiting %.0fms then checking positions (attempt %d/2)...", delay * 1000, attempt)
-                await asyncio.sleep(delay)
-                try:
-                    positions = await asyncio.to_thread(client.portfolio.positions, {})
-                    pos = positions.get("positions", {}).get(market_slug, {})
-                    net_pos = int(pos.get("netPosition", 0))
-                    if net_pos > 0:
-                        log.info("  POSITION FOUND on attempt %d: netPosition=%d — buy DID fill!", attempt, net_pos)
-                        cum_qty = net_pos
-                        state = "ORDER_STATE_FILLED"
-                        buy_order_id = "position-check"
-                        break
-                except Exception:
-                    pass
+        if executions:
+            # Check execution type — FILL vs CANCELED
+            exec_type = executions[0].get("type", "")
+            if "FILL" in exec_type:
+                cum_qty = config.quantity
+                state = "ORDER_STATE_FILLED"
             else:
-                log.info("  No position after 2 attempts (1.5s total) — buy genuinely failed")
                 cum_qty = 0
+                state = exec_type
+        else:
+            # synchronousExecution returned empty executions — order likely rejected
+            cum_qty = 0
+            state = "NO_EXECUTIONS"
+
+        log.info("  BUY result: id=%s state=%s cumQty=%s latency=%.0fms executions=%d",
+                 buy_order_id, state, cum_qty, buy_latency, len(executions))
 
         if cum_qty == 0 or state in ("ORDER_STATE_CANCELLED", "ORDER_STATE_REJECTED", "ORDER_STATE_NEW", "ORDER_STATE_EXPIRED"):
             log.info("  BUY did not fill — aborting")
@@ -279,81 +255,29 @@ async def _execute_trade(
             return
 
     except Exception as exc:
-        # "Order not found" on retrieve might mean the order filled and was purged.
-        # Check positions to see if we actually hold the asset.
-        if "not found" in str(exc).lower() or "Not Found" in str(exc):
-            log.warning("  BUY retrieve failed (%s) — checking positions...", exc)
-            try:
-                positions = await asyncio.to_thread(client.portfolio.positions, {})
-                pos = positions.get("positions", {}).get(market_slug, {})
-                net_pos = int(pos.get("netPosition", 0))
-                if net_pos > 0:
-                    log.info("  POSITION FOUND: netPosition=%d — buy DID fill!", net_pos)
-                    # Continue to sell step — skip the normal BUY log below
-                    buy_order_id = "position-check"
-                    _log_execution({
-                        "arb_id": arb_id, "timestamp": now.isoformat(), "game": game, "sport": sport,
-                        "action": "BUY", "market_slug": market_slug, "intent": intent,
-                        "buy_price": f"{buy_price:.4f}", "sell_price": "", "quantity": config.quantity,
-                        "gross_spread": f"{gross_spread:.4f}", "profit": "",
-                        "buy_fee": f"{buy_fee:.4f}", "sell_fee": "",
-                        "hold_time_ms": "", "order_id": "position-check",
-                        "poly_bid_at_exit": "", "exit_reason": "", "error": "",
-                        "buy_latency_ms": "", "sell_latency_ms": "",
-                    })
-                    # Fall through to sell step below
-                else:
-                    log.info("  No position found — buy genuinely failed")
-                    _log_execution({
-                        "arb_id": arb_id, "timestamp": now.isoformat(), "game": game, "sport": sport,
-                        "action": "BUY_ERROR", "market_slug": market_slug, "intent": intent,
-                        "buy_price": f"{buy_price:.4f}", "sell_price": "", "quantity": config.quantity,
-                        "gross_spread": f"{gross_spread:.4f}", "profit": "",
-                        "buy_fee": "", "sell_fee": "", "hold_time_ms": "", "order_id": "",
-                        "poly_bid_at_exit": "", "exit_reason": "buy_error", "error": str(exc),
-                "buy_latency_ms": "", "sell_latency_ms": "",
-                    })
-                    _in_flight.discard(arb_key)
-                    return
-            except Exception as pos_exc:
-                log.error("  Position check also failed: %s", pos_exc)
-                _log_execution({
-                    "arb_id": arb_id, "timestamp": now.isoformat(), "game": game, "sport": sport,
-                    "action": "BUY_ERROR", "market_slug": market_slug, "intent": intent,
-                    "buy_price": f"{buy_price:.4f}", "sell_price": "", "quantity": config.quantity,
-                    "gross_spread": f"{gross_spread:.4f}", "profit": "",
-                    "buy_fee": "", "sell_fee": "", "hold_time_ms": "", "order_id": "",
-                    "poly_bid_at_exit": "", "exit_reason": "buy_error", "error": str(pos_exc),
-                    "buy_latency_ms": "", "sell_latency_ms": "",
-                })
-                _in_flight.discard(arb_key)
-                return
-        else:
-            log.error("  BUY failed: %s", exc)
-            _log_execution({
-                "arb_id": arb_id, "timestamp": now.isoformat(), "game": game, "sport": sport,
-                "action": "BUY_ERROR", "market_slug": market_slug, "intent": intent,
-                "buy_price": f"{buy_price:.4f}", "sell_price": "", "quantity": config.quantity,
-                "gross_spread": f"{gross_spread:.4f}", "profit": "",
-                "buy_fee": "", "sell_fee": "", "hold_time_ms": "", "order_id": "",
-                "poly_bid_at_exit": "", "exit_reason": "buy_error", "error": str(exc),
-                "buy_latency_ms": "", "sell_latency_ms": "",
-            })
-            _in_flight.discard(arb_key)
-            return
-
-    # Log BUY (skip if already logged via position-check path)
-    if buy_order_id != "position-check":
+        log.error("  BUY failed: %s", exc)
         _log_execution({
             "arb_id": arb_id, "timestamp": now.isoformat(), "game": game, "sport": sport,
-            "action": "BUY", "market_slug": market_slug, "intent": intent,
+            "action": "BUY_ERROR", "market_slug": market_slug, "intent": intent,
             "buy_price": f"{buy_price:.4f}", "sell_price": "", "quantity": config.quantity,
             "gross_spread": f"{gross_spread:.4f}", "profit": "",
-            "buy_fee": f"{buy_fee:.4f}", "sell_fee": "",
-            "hold_time_ms": "", "order_id": buy_order_id,
-            "poly_bid_at_exit": "", "exit_reason": "", "error": "",
-            "buy_latency_ms": f"{buy_latency:.0f}", "sell_latency_ms": "",
+            "buy_fee": "", "sell_fee": "", "hold_time_ms": "", "order_id": "",
+            "poly_bid_at_exit": "", "exit_reason": "buy_error", "error": str(exc),
+            "buy_latency_ms": "", "sell_latency_ms": "",
         })
+        _in_flight.discard(arb_key)
+        return
+
+    _log_execution({
+        "arb_id": arb_id, "timestamp": now.isoformat(), "game": game, "sport": sport,
+        "action": "BUY", "market_slug": market_slug, "intent": intent,
+        "buy_price": f"{buy_price:.4f}", "sell_price": "", "quantity": config.quantity,
+        "gross_spread": f"{gross_spread:.4f}", "profit": "",
+        "buy_fee": f"{buy_fee:.4f}", "sell_fee": "",
+        "hold_time_ms": "", "order_id": buy_order_id,
+        "poly_bid_at_exit": "", "exit_reason": "", "error": "",
+        "buy_latency_ms": f"{buy_latency:.0f}", "sell_latency_ms": "",
+    })
 
     # ── Step 2: Place maker sell at target ──────────────────────────────
     sell_intent = "ORDER_INTENT_SELL_LONG" if "LONG" in intent else "ORDER_INTENT_SELL_SHORT"
