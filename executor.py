@@ -52,6 +52,7 @@ _FIELDNAMES = [
     "error",
     "buy_latency_ms",       # time to place buy order (create + retrieve)
     "sell_latency_ms",      # time to place maker sell or taker exit order
+    "poly_depth",           # contracts available at ask when we fired
 ]
 
 
@@ -200,16 +201,17 @@ async def _execute_trade(
     buy_fee = 0.05 * buy_price * (1 - buy_price)
     sell_target = round(buy_price + config.sell_target_offset, 2)
 
-    log.info(
-        "\n\n  STRATEGY B: %s  buy@%.3f  sell_target@%.3f  gross=%.1f%%\n",
-        game, buy_price, sell_target, gross_spread * 100,
-    )
-
     # ── Pre-buy recheck: verify arb still exists with live prices ──────
     poly_market = poly_by_token.get(poly_token_id)
     current_poly_ask = poly_market.yes_ask if poly_market else buy_price
     current_kalshi_ask = kalshi_order_market.no_ask if kalshi_side == "NO" else kalshi_order_market.yes_ask
     current_gross = 1.0 - current_kalshi_ask - current_poly_ask
+    poly_depth = poly_market.yes_ask_size if poly_market else 0
+
+    log.info(
+        "\n\n  STRATEGY B: %s  buy@%.3f  sell_target@%.3f  gross=%.1f%%  depth=%d\n",
+        game, buy_price, sell_target, gross_spread * 100, poly_depth,
+    )
 
     if current_gross < config.min_gross_spread - 1e-9:
         log.info("  PRE-BUY RECHECK: arb gone (gross=%.1f%%, was %.1f%%) — skipping",
@@ -275,6 +277,7 @@ async def _execute_trade(
                 "hold_time_ms": "", "order_id": buy_order_id,
                 "poly_bid_at_exit": "", "exit_reason": "no_fill", "error": state,
             "buy_latency_ms": f"{buy_latency:.0f}", "sell_latency_ms": "",
+            "poly_depth": poly_depth,
             })
             _in_flight.discard(arb_key)
             return
@@ -289,6 +292,7 @@ async def _execute_trade(
             "buy_fee": "", "sell_fee": "", "hold_time_ms": "", "order_id": "",
             "poly_bid_at_exit": "", "exit_reason": "buy_error", "error": str(exc),
             "buy_latency_ms": "", "sell_latency_ms": "",
+            "poly_depth": poly_depth,
         })
         _in_flight.discard(arb_key)
         return
@@ -302,6 +306,7 @@ async def _execute_trade(
         "hold_time_ms": "", "order_id": buy_order_id,
         "poly_bid_at_exit": "", "exit_reason": "", "error": "",
         "buy_latency_ms": f"{buy_latency:.0f}", "sell_latency_ms": "",
+        "poly_depth": poly_depth,
     })
 
     # ── Step 2: Place maker sell at target ──────────────────────────────
@@ -468,6 +473,7 @@ async def _execute_trade(
         "error": "",
         "buy_latency_ms": f"{buy_latency:.0f}",
         "sell_latency_ms": f"{sell_latency:.0f}",
+        "poly_depth": poly_depth,
     })
 
     _in_flight.discard(arb_key)
