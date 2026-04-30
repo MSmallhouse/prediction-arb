@@ -79,7 +79,9 @@ Kalshi opener only, 4%+ gross, in-game (≤180min to pitch), poly depth > 0, buy
 
 - **BUY_SHORT price inversion**: polymarket.us `price` field for SHORT = long-side price. Executor sends `1 - yes_ask` for SHORT intents. Same inversion for SELL_SHORT.
 - **Ghost fills**: `create()` returns `{id, executions}` only. `retrieve(id)` may return "not found" if order filled and was purged. Now checks `portfolio.positions()` as fallback. Duplicate BUY log prevented via `order_id == "position-check"` guard.
-- **max_trades=1**: only counts maker fills (convergence). Taker exits and buy failures don't count — executor keeps trying.
+- **`synchronousExecution: true`**: Blocks until fill/cancel, returns result in `executions` array. Eliminates ghost fill race condition. Added after discovering VPS is too fast for async retrieve().
+- **Pre-buy gross recheck**: Right before `create()`, re-reads live Kalshi + Poly prices from WS stores and recalculates gross. Skips if arb has evaporated since detection. Zero latency (dict lookups). Prevents buying on stale signals (e.g., Kalshi reverted during position-check delay).
+- **max_trades=0**: unlimited trades, executor runs indefinitely.
 - **Event-driven monitoring**: WS ticks call `executor.on_price_update()` → sets `asyncio.Event` → monitor wakes instantly. No polling.
 - **Opener caveat**: `opener` field = which platform ticked most recently, NOT which diverged from fair value. Works 88% of the time but fails on game-ending moments where both platforms race to 0c/100c. Price range filter (15c-85c) mitigates this.
 
@@ -97,6 +99,11 @@ IOC allows partial fills. Maker sell MUST use actual `cumQuantity` from fill, NO
 - Best exit timing: median 10.3s
 - From home: 37% of arbs last >145ms (buy could fill). 62% too fast.
 - From VPS: 66% viable (~50ms setup).
+
+## Future Optimizations (not yet implemented)
+
+- **Same-team arb comparison**: Currently arb detector pairs opposite teams cross-platform (K:TeamA + P:TeamB). For Strategy B (single-leg), comparing same team across platforms (K:TeamA vs P:TeamA) may be more accurate — prevents buying a team heading to 0c when cross-team math shows a "gap." Requires rethinking arb detection pipeline.
+- **Private WebSocket for fill detection**: Replace `synchronousExecution` blocking call with private WS subscription (`SUBSCRIPTION_TYPE_ORDER`). Would get instant fill notifications without blocking. More complex but eliminates any latency from synchronous wait. Investigate if `synchronousExecution` latency becomes a bottleneck.
 
 ## Output Files
 

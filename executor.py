@@ -172,6 +172,8 @@ async def maybe_execute(
             gross_spread=opp.gross_spread,
             poly_token_id=poly_token,
             poly_by_token=poly_by_token,
+            kalshi_order_market=opp.kalshi_order_market,
+            kalshi_side=opp.kalshi_side,
         ),
         name=f"exec-{opp.game_label}",
     )
@@ -190,6 +192,8 @@ async def _execute_trade(
     gross_spread: float,
     poly_token_id: str,
     poly_by_token: dict,
+    kalshi_order_market,
+    kalshi_side: str,
 ) -> None:
     """Execute the full Strategy B lifecycle: buy → monitor → sell."""
     now = datetime.now(timezone.utc)
@@ -200,6 +204,26 @@ async def _execute_trade(
         "\n\n  STRATEGY B: %s  buy@%.3f  sell_target@%.3f  gross=%.1f%%\n",
         game, buy_price, sell_target, gross_spread * 100,
     )
+
+    # ── Pre-buy recheck: verify arb still exists with live prices ──────
+    poly_market = poly_by_token.get(poly_token_id)
+    current_poly_ask = poly_market.yes_ask if poly_market else buy_price
+    current_kalshi_ask = kalshi_order_market.no_ask if kalshi_side == "NO" else kalshi_order_market.yes_ask
+    current_gross = 1.0 - current_kalshi_ask - current_poly_ask
+
+    if current_gross < config.min_gross_spread - 1e-9:
+        log.info("  PRE-BUY RECHECK: arb gone (gross=%.1f%%, was %.1f%%) — skipping",
+                 current_gross * 100, gross_spread * 100)
+        _in_flight.discard(arb_key)
+        return
+
+    # Update buy_price to current if it changed
+    if abs(current_poly_ask - buy_price) > 0.001:
+        log.info("  PRE-BUY RECHECK: poly ask moved %.3f → %.3f", buy_price, current_poly_ask)
+        buy_price = current_poly_ask
+        order_price = round(1.0 - buy_price, 2) if "SHORT" in intent else buy_price
+        buy_fee = 0.05 * buy_price * (1 - buy_price)
+        sell_target = round(buy_price + config.sell_target_offset, 2)
 
     # ── Step 1: Buy (IOC at current ask) ────────────────────────────────
     buy_order_id = ""
