@@ -36,7 +36,7 @@ Series IDs: MLB 2026 = 15, NBA 2025 = 4, NHL 2025 = 6.
 
 ## Arb Detection
 
-4 Kalshi order books per game. YES/NO optimization picks cheaper side. Both prices from real-time `orderbook_delta`.
+4 Kalshi order books per game (Team A YES/NO, Team B YES/NO). YES on Team A = NO on Team B (same payout). Pick cheaper. Both prices from real-time `orderbook_delta`.
 
 ```
 p1 = min(k_market.yes_ask, opp_k_market.no_ask)
@@ -80,13 +80,23 @@ Kalshi opener only, 4%+ gross, in-game (≤180min to pitch), poly depth > 0, buy
 - **BUY_SHORT price inversion**: polymarket.us `price` field for SHORT = long-side price. Executor sends `1 - yes_ask` for SHORT intents. Same inversion for SELL_SHORT.
 - **Ghost fills**: `create()` returns `{id, executions}` only. `retrieve(id)` may return "not found" if order filled and was purged. Now checks `portfolio.positions()` as fallback. Duplicate BUY log prevented via `order_id == "position-check"` guard.
 - **`synchronousExecution: true`**: Blocks until fill/cancel, returns result in `executions` array. Eliminates ghost fill race condition. Added after discovering VPS is too fast for async retrieve().
-- **Pre-buy gross recheck**: Right before `create()`, re-reads live Kalshi + Poly prices from WS stores and recalculates gross. Skips if arb has evaporated since detection. Zero latency (dict lookups). Prevents buying on stale signals (e.g., Kalshi reverted during position-check delay).
+- **Pre-buy gross recheck**: Right before `create()`, re-reads live Kalshi + Poly prices from WS stores and recalculates gross. Skips if arb has evaporated since detection. Zero latency (dict lookups). Prevents buying on stale signals.
 - **max_trades=0**: unlimited trades, executor runs indefinitely.
 - **Event-driven monitoring**: WS ticks call `executor.on_price_update()` → sets `asyncio.Event` → monitor wakes instantly. No polling.
-- **Opener caveat**: `opener` field = which platform ticked most recently, NOT which diverged from fair value. Works 88% of the time but fails on game-ending moments where both platforms race to 0c/100c. Price range filter (15c-85c) mitigates this.
+- **Opener caveat**: `opener` field = which platform ticked most recently, NOT which diverged from fair value. Works 88% of the time but fails on game-ending moments where both platforms race to 0c/100c. Price range filter (15c) mitigates this.
 
 **⚠️ IMPORTANT — Scaling bug (not yet fixed):**
 IOC allows partial fills. Maker sell MUST use actual `cumQuantity` from fill, NOT `config.quantity`. Fix before increasing quantity above 1.
+
+## VPS Deployment
+
+Running on AWS EC2 t3.micro in us-east-1 (Virginia). Co-located with Polymarket origin servers.
+- Poly latency: ~1.2ms (was 5-6ms from home)
+- Kalshi latency: ~0.8ms (was 18-19ms from home)
+- SSH: `ssh -i ~/.ssh/arb-key.pem ubuntu@98.82.172.44`
+- Run in screen: `screen -S arb` → `python3 main.py 2>&1 | tee scanner.log`
+- Detach: `Ctrl+A` then `d`. Reattach: `screen -r arb`
+- Pull data: `scp -i ~/.ssh/arb-key.pem ubuntu@98.82.172.44:~/prediction-arb/*.csv ~/Documents/prediction-arb/`
 
 ## Key Data (n=801 arbs at 4%+, n=70 convergence tracked)
 
@@ -104,10 +114,13 @@ IOC allows partial fills. Maker sell MUST use actual `cumQuantity` from fill, NO
 
 - **Same-team arb comparison**: Currently arb detector pairs opposite teams cross-platform (K:TeamA + P:TeamB). For Strategy B (single-leg), comparing same team across platforms (K:TeamA vs P:TeamA) may be more accurate — prevents buying a team heading to 0c when cross-team math shows a "gap." Requires rethinking arb detection pipeline.
 - **Private WebSocket for fill detection**: Replace `synchronousExecution` blocking call with private WS subscription (`SUBSCRIPTION_TYPE_ORDER`). Would get instant fill notifications without blocking. More complex but eliminates any latency from synchronous wait. Investigate if `synchronousExecution` latency becomes a bottleneck.
+- **P(fill) × size curve**: Optimal FOK size is NOT max depth. Need to model fill rate degradation as size increases. Start collecting data at quantity=1, then scale up.
+- **Kalshi velocity filter**: If Kalshi moved >10c in last 1-2s, skip — arb is a speed difference during game-ending moment, not real mispricing.
 
 ## Output Files
 
 - `arb_durations_3.csv` / `arb_durations_4.csv` — arb detection log (OPEN/CLOSE events)
 - `convergence_log.csv` — 60s post-arb price tracking (Poly + Kalshi ticks)
-- `executions.csv` — live trade log (BUY, SELL, errors, profit/loss)
+- `executions.csv` — live trade log (BUY, SELL, errors, profit/loss, latency)
+- All three join on `arb_id` = `first_seen` ISO timestamp
 - Columns in arb_durations: `event, game, sport, gross_spread, net_pretax, first_seen, closed_at, duration_seconds, peak_gross, opener, minutes_to_first_pitch, kalshi_team, kalshi_side, poly_team, kalshi_ask, kalshi_bid, poly_ask, poly_bid, kalshi_oi, kalshi_vol_24h, game_datetime, kalshi_depth, poly_depth`
