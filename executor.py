@@ -218,21 +218,56 @@ async def _execute_trade(
         )
         buy_latency = (time.monotonic() - t_start) * 1000
 
-        # create() returns just {id, executions} — need retrieve() for fill status
+        # create() returns {id, executions}. If executions is non-empty, the order
+        # filled instantly — no need for retrieve(). This avoids the "Order not found"
+        # race condition where retrieve() and positions() both miss a fast fill.
         buy_order_id = result.get("id", "")
-        if buy_order_id:
-            order_detail = await asyncio.to_thread(client.orders.retrieve, buy_order_id)
-            order = order_detail.get("order", order_detail)
-        else:
-            order = result
+        executions = result.get("executions", [])
 
-        state = order.get("state", "")
-        cum_qty = order.get("cumQuantity", 0)
+        if executions:
+            # Order filled — executions array has fill details
+            cum_qty = config.quantity  # IOC fills fully or not at all for qty=1
+            state = "ORDER_STATE_FILLED"
+            log.info("  BUY FILLED (from executions): id=%s latency=%.0fms", buy_order_id, buy_latency)
+        elif buy_order_id:
+            # No executions in create response — check retrieve() as fallback
+            try:
+                order_detail = await asyncio.to_thread(client.orders.retrieve, buy_order_id)
+                order = order_detail.get("order", order_detail)
+                state = order.get("state", "")
+                cum_qty = order.get("cumQuantity", 0)
+            except Exception:
+                # retrieve() failed — order might have filled and been purged
+                state = "UNKNOWN"
+                cum_qty = 0
+        else:
+            state = ""
+            cum_qty = 0
 
         log.info("  BUY result: id=%s state=%s cumQty=%s latency=%.0fms",
                  buy_order_id, state, cum_qty, buy_latency)
 
-        if cum_qty == 0 or state in ("ORDER_STATE_CANCELLED", "ORDER_STATE_REJECTED", "ORDER_STATE_NEW"):
+        # UNKNOWN state: retrieve() failed but no executions either.
+        # Wait and check positions as last resort.
+        if state == "UNKNOWN":
+            log.warning("  BUY state unknown — waiting 500ms then checking positions...")
+            await asyncio.sleep(0.5)
+            try:
+                positions = await asyncio.to_thread(client.portfolio.positions, {})
+                pos = positions.get("positions", {}).get(market_slug, {})
+                net_pos = int(pos.get("netPosition", 0))
+                if net_pos > 0:
+                    log.info("  POSITION FOUND after delay: netPosition=%d — buy DID fill!", net_pos)
+                    cum_qty = net_pos
+                    state = "ORDER_STATE_FILLED"
+                    buy_order_id = "position-check"
+                else:
+                    log.info("  No position after delay — buy genuinely failed")
+                    cum_qty = 0
+            except Exception:
+                cum_qty = 0
+
+        if cum_qty == 0 or state in ("ORDER_STATE_CANCELLED", "ORDER_STATE_REJECTED", "ORDER_STATE_NEW", "ORDER_STATE_EXPIRED"):
             log.info("  BUY did not fill — aborting")
             _log_execution({
                 "arb_id": arb_id, "timestamp": now.isoformat(), "game": game, "sport": sport,
