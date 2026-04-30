@@ -373,10 +373,10 @@ async def _discovery_loop(session: aiohttp.ClientSession) -> None:
     )
     _poly_us_client = poly_us_client
 
-    # Strategy B execution — enabled for 1 trade, then auto-disables
+    # Strategy B execution — run indefinitely
     executor.config.enabled = True
-    executor.config.max_trades = 1
-    log.info("Strategy B executor ENABLED (max_trades=1, min_gross=%.1f%%, timeout=%ds, drop=%.0fc)",
+    executor.config.max_trades = 0  # 0 = unlimited
+    log.info("Strategy B executor ENABLED (unlimited trades, min_gross=%.1f%%, timeout=%ds, drop=%.0fc)",
              executor.config.min_gross_spread * 100,
              executor.config.timeout_seconds,
              executor.config.price_drop_threshold * 100)
