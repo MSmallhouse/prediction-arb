@@ -95,6 +95,21 @@ class PolymarketUSWSClient:
             except ConnectionClosed:
                 log.warning("PolyUS WS: dynamic subscribe failed; will resubscribe on reconnect")
 
+    def unsubscribe(self, slugs: list[str]) -> int:
+        """
+        Drop local state for slugs no longer active (called after discovery prune).
+        Server may keep streaming until reconnect; handler gates on _subscribed.
+        Returns number of slugs actually removed.
+        """
+        removed = 0
+        for slug in slugs:
+            if slug not in self._subscribed:
+                continue
+            self._subscribed.discard(slug)
+            self._last_prices.pop(slug, None)
+            removed += 1
+        return removed
+
     async def stop(self) -> None:
         self._running = False
         if self._ws is not None:
@@ -138,6 +153,9 @@ class PolymarketUSWSClient:
         data = msg.get("marketData", {})
         slug = data.get("marketSlug", "")
         if not slug:
+            return
+        if slug not in self._subscribed:
+            # Slug pruned locally; ignore stale tick from server.
             return
 
         bids = data.get("bids", [])

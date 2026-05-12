@@ -310,7 +310,7 @@ def _us_markets_to_poly_markets(us_markets: list[PolymarketUSMarket]) -> list[Po
 def _populate_stores(
     kalshi_markets: list[KalshiMarket],
     poly_markets: list[PolymarketMarket],
-) -> None:
+) -> tuple[list[str], list[str]]:
     """
     Merge REST discovery results into price stores.
     Preserve live WS prices for markets already in store.
@@ -354,6 +354,8 @@ def _populate_stores(
         del _poly_slug_to_tokens[slug]
     if stale_k or stale_p:
         log.info("Pruned %d stale Kalshi + %d stale Poly markets", len(stale_k), len(stale_p))
+
+    return stale_k, stale_slugs
 
 
 # ── Discovery loop ────────────────────────────────────────────────────────────
@@ -425,11 +427,20 @@ async def _discovery_loop(session: aiohttp.ClientSession) -> None:
         # Convert polymarket.us markets to PolymarketMarket objects (2 per game)
         poly_markets = _us_markets_to_poly_markets(us_markets)
 
-        _populate_stores(kalshi_markets, poly_markets)
+        stale_kalshi_tickers, stale_poly_slugs = _populate_stores(kalshi_markets, poly_markets)
         log.info(
             "Stores: %d Kalshi markets, %d Poly markets (%d games)",
             len(kalshi_by_ticker), len(poly_by_token), len(us_markets),
         )
+
+        if kalshi_ws is not None and stale_kalshi_tickers:
+            dropped = kalshi_ws.unsubscribe(stale_kalshi_tickers)
+            if dropped:
+                log.info("Kalshi WS: unsubscribed %d stale tickers", dropped)
+        if poly_ws is not None and stale_poly_slugs:
+            dropped = poly_ws.unsubscribe(stale_poly_slugs)
+            if dropped:
+                log.info("PolyUS WS: unsubscribed %d stale slugs", dropped)
 
         if poly_ws is None:
             # First discovery: launch WS clients.

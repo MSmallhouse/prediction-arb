@@ -204,6 +204,29 @@ class KalshiWSClient:
                 return
             log.info("Kalshi WS: dynamically subscribed %d new tickers", len(new))
 
+    def unsubscribe(self, market_tickers: list[str]) -> int:
+        """
+        Drop local state for tickers no longer active (called after discovery prune).
+        Server may keep streaming until reconnect; handlers gate on _subscribed.
+        Returns number of tickers actually removed.
+        """
+        removed = 0
+        for ticker in market_tickers:
+            if ticker not in self._subscribed:
+                continue
+            self._subscribed.discard(ticker)
+            self._books.pop(ticker, None)
+            sid = self._ticker_sid.pop(ticker, None)
+            if sid is not None:
+                bucket = self._sid_tickers.get(sid)
+                if bucket is not None:
+                    bucket.discard(ticker)
+                    if not bucket:
+                        self._sid_tickers.pop(sid, None)
+                        self._sid_seq.pop(sid, None)
+            removed += 1
+        return removed
+
     async def stop(self) -> None:
         self._running = False
         if self._ws is not None:
@@ -274,6 +297,9 @@ class KalshiWSClient:
         ticker = data.get("market_ticker")
         if not ticker:
             return
+        if ticker not in self._subscribed:
+            # Ticker pruned locally; ignore stale snapshot from server.
+            return
 
         book = _MarketBook()
         book.load_snapshot(
@@ -328,6 +354,10 @@ class KalshiWSClient:
             return
 
         self._sid_seq[sid] = seq
+
+        if ticker not in self._subscribed:
+            # Ticker pruned locally; advance seq but skip processing.
+            return
 
         book = self._books.get(ticker)
         if book is None:
