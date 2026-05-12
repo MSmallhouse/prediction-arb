@@ -24,6 +24,7 @@ from scrapers.kalshi import discover_mlb_events, discover_nba_events, discover_n
 from scrapers.polymarket import PolymarketMarket, kalshi_ticker_to_poly_slug
 from scrapers.polymarket_us import PolymarketUSMarket, discover_all_sports
 from scrapers.polymarket_us_ws import PolymarketUSWSClient
+from scrapers.polymarket_us_private_ws import PolymarketUSPrivateWSClient
 from scrapers.kalshi_ws import KalshiWSClient
 from arb_detector import find_arbs
 from arb_tracker import ArbTracker, log_arb_duration
@@ -57,6 +58,7 @@ tracker_3 = ArbTracker()
 tracker_4 = ArbTracker()
 
 poly_ws: PolymarketUSWSClient | None = None
+poly_private_ws: PolymarketUSPrivateWSClient | None = None
 kalshi_ws: KalshiWSClient | None = None
 _poly_us_client = None  # PolymarketUS client, set in _discovery_loop
 _ready_after: datetime | None = None
@@ -365,7 +367,7 @@ async def _discovery_loop(session: aiohttp.ClientSession) -> None:
     Hourly REST discovery. On first run, populates stores and launches WS clients.
     On subsequent runs, subscribes new markets to existing WS connections.
     """
-    global poly_ws, kalshi_ws, _ready_after, _poly_us_client
+    global poly_ws, poly_private_ws, kalshi_ws, _ready_after, _poly_us_client
 
     # Initialize polymarket.us SDK client (sync, used for REST discovery + order placement)
     from polymarket_us import PolymarketUS
@@ -467,6 +469,18 @@ async def _discovery_loop(session: aiohttp.ClientSession) -> None:
                     name="polymarket-us-ws",
                 )
                 log.info("Polymarket US WS task launched (%d slugs)", len(ws_slugs))
+
+                # Private WS for order events (replaces synchronousExecution).
+                poly_private_ws = PolymarketUSPrivateWSClient(
+                    key_id=poly_key_id,
+                    secret_key=poly_secret,
+                )
+                executor.set_private_ws(poly_private_ws)
+                asyncio.create_task(
+                    poly_private_ws.start(),
+                    name="polymarket-us-private-ws",
+                )
+                log.info("Polymarket US private WS task launched")
 
             # Kalshi WS
             if kalshi_api_key and kalshi_private_key:

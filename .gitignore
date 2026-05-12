@@ -16,5 +16,11 @@ venv/
 # OS
 .DS_Store
 scanner.log
+scanner.log.*
 convergence_log.csv
 executions.csv
+
+# Historical / VPS snapshots (large, local-only)
+historical-data/
+*_vps.csv
+*_vps.log
