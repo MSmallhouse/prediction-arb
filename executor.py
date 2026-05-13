@@ -73,6 +73,8 @@ class ExecutionConfig:
     min_buy_price: float = 0.15         # skip teams below 15c (likely losing, heading to 0c)
     max_buy_price: float = 1.00         # no upper cap — buying 90c+ teams heading to 100c is profitable
     max_trades: int = 1                 # stop executing after this many completed trades (0 = unlimited)
+    kalshi_velocity_threshold: float = 0.05  # skip if Kalshi yes_ask moved >5c in velocity window
+    kalshi_velocity_window_s: float = 2.0    # lookback window for velocity check (seconds)
 
 
 config = ExecutionConfig()
@@ -98,10 +100,18 @@ _active_positions: dict[str, _ActivePosition] = {}  # poly_token_id → position
 _private_ws = None
 ORDER_TERMINAL_TIMEOUT = 1.0  # seconds to wait for terminal state via WS
 
+# Kalshi WS client — used for velocity filter (set from main.py at startup).
+_kalshi_ws = None
+
 
 def set_private_ws(ws) -> None:
     global _private_ws
     _private_ws = ws
+
+
+def set_kalshi_ws(ws) -> None:
+    global _kalshi_ws
+    _kalshi_ws = ws
 
 
 def _check_position_fallback(client: PolymarketUS, poly_token_id: str) -> int:
@@ -167,6 +177,19 @@ async def maybe_execute(
     # Price range filter: skip game-ending arbs where the team is nearly decided
     if opp.poly_market.yes_ask < config.min_buy_price or opp.poly_market.yes_ask > config.max_buy_price:
         return
+
+    # Velocity filter: if Kalshi price moved rapidly, it's likely a game-scoring event
+    # (both platforms racing to 0c/100c), not real mispricing. Buying mid-move leads to
+    # gap losses that blow through the price_drop stop.
+    if _kalshi_ws is not None and config.kalshi_velocity_threshold > 0:
+        kalshi_ticker = opp.kalshi_order_market.market_ticker
+        velocity = _kalshi_ws.yes_ask_velocity(kalshi_ticker, window_s=config.kalshi_velocity_window_s)
+        if velocity >= config.kalshi_velocity_threshold:
+            log.debug(
+                "Velocity filter: %s yes_ask moved %.0fc in %.1fs — skipping",
+                kalshi_ticker, velocity * 100, config.kalshi_velocity_window_s,
+            )
+            return
 
     if arb_key in _in_flight:
         return
@@ -245,10 +268,14 @@ async def _execute_trade(
     poly_ws_age_ms = (now - poly_market.fetched_at).total_seconds() * 1000 if poly_market else -1
     kalshi_ws_age_ms = (now - kalshi_order_market.fetched_at).total_seconds() * 1000 if kalshi_order_market else -1
 
+    kalshi_velocity = _kalshi_ws.yes_ask_velocity(
+        kalshi_order_market.market_ticker, window_s=config.kalshi_velocity_window_s
+    ) if _kalshi_ws else 0.0
+
     log.info(
-        "\n\n  STRATEGY B: %s  buy@%.3f  sell_target@%.3f  gross=%.1f%%  depth=%d  ws_age=P%.0fms/K%.0fms\n",
+        "\n\n  STRATEGY B: %s  buy@%.3f  sell_target@%.3f  gross=%.1f%%  depth=%d  ws_age=P%.0fms/K%.0fms  k_vel=%.0fc\n",
         game, buy_price, sell_target, gross_spread * 100, poly_depth,
-        poly_ws_age_ms, kalshi_ws_age_ms,
+        poly_ws_age_ms, kalshi_ws_age_ms, kalshi_velocity * 100,
     )
 
     if current_gross < config.min_gross_spread - 1e-9:

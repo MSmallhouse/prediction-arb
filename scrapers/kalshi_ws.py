@@ -23,6 +23,7 @@ import base64
 import json
 import logging
 import time
+from collections import deque
 from typing import Awaitable, Callable, Optional
 
 from websockets.asyncio.client import connect
@@ -179,6 +180,11 @@ class KalshiWSClient:
         self._sid_seq: dict[int, int] = {}           # sid → last seq seen
         self._ticker_sid: dict[str, int] = {}        # market_ticker → sid
 
+        # Velocity tracking: recent yes_ask values per ticker for game-event detection
+        # Deque of (timestamp, yes_ask); entries older than _VELOCITY_KEEP_S are trimmed.
+        self._price_history: dict[str, deque] = {}
+        self._VELOCITY_KEEP_S = 5.0
+
     async def start(self, initial_market_tickers: list[str]) -> None:
         self._running = True
         self._subscribed.update(initial_market_tickers)
@@ -204,6 +210,31 @@ class KalshiWSClient:
                 return
             log.info("Kalshi WS: dynamically subscribed %d new tickers", len(new))
 
+    def _record_price(self, ticker: str, yes_ask: float) -> None:
+        now = time.monotonic()
+        if ticker not in self._price_history:
+            self._price_history[ticker] = deque()
+        dq = self._price_history[ticker]
+        dq.append((now, yes_ask))
+        cutoff = now - self._VELOCITY_KEEP_S
+        while dq and dq[0][0] < cutoff:
+            dq.popleft()
+
+    def yes_ask_velocity(self, ticker: str, window_s: float = 2.0) -> float:
+        """Absolute yes_ask change in the last window_s seconds. 0.0 if no/insufficient history."""
+        dq = self._price_history.get(ticker)
+        if not dq or len(dq) < 2:
+            return 0.0
+        cutoff = time.monotonic() - window_s
+        oldest_price = None
+        for ts, price in dq:
+            if ts >= cutoff:
+                oldest_price = price
+                break
+        if oldest_price is None:
+            return 0.0
+        return abs(dq[-1][1] - oldest_price)
+
     def unsubscribe(self, market_tickers: list[str]) -> int:
         """
         Drop local state for tickers no longer active (called after discovery prune).
@@ -216,6 +247,7 @@ class KalshiWSClient:
                 continue
             self._subscribed.discard(ticker)
             self._books.pop(ticker, None)
+            self._price_history.pop(ticker, None)
             sid = self._ticker_sid.pop(ticker, None)
             if sid is not None:
                 bucket = self._sid_tickers.get(sid)
@@ -307,6 +339,7 @@ class KalshiWSClient:
             data.get("no_dollars_fp", []),
         )
         self._books[ticker] = book
+        self._record_price(ticker, book.yes_ask)
 
         # Track sid → ticker mapping and seq
         if sid not in self._sid_tickers:
@@ -376,6 +409,7 @@ class KalshiWSClient:
 
         changed = book.apply_delta(side, price, delta)
         if changed:
+            self._record_price(ticker, book.yes_ask)
             await self._on_price_update(
                 ticker, book.yes_ask, book.yes_bid, book.no_ask, book.no_bid,
                 book.yes_ask_size, book.no_ask_size,

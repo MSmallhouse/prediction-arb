@@ -489,6 +489,7 @@ async def _discovery_loop(session: aiohttp.ClientSession) -> None:
                     private_key_pem=kalshi_private_key,
                     on_price_update=_on_kalshi_price,
                 )
+                executor.set_kalshi_ws(kalshi_ws)
                 asyncio.create_task(
                     kalshi_ws.start(initial_market_tickers=list(kalshi_by_ticker.keys())),
                     name="kalshi-ws",
