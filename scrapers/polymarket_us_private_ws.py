@@ -126,7 +126,48 @@ class PolymarketUSPrivateWSClient:
             self._ws = ws
             log.info("PolyUS private WS: connected")
             await self._send_subscribe(ws)
+            await self._confirm_ready()
             await self._read_loop(ws)
+
+    async def _confirm_ready(self) -> None:
+        """
+        Arm the executor once credentials and the account endpoint are verified.
+
+        ⚠️ 2026-09-19: Polymarket STOPPED sending an initial snapshot on
+        SUBSCRIPTION_TYPE_ACCOUNT_BALANCE. That snapshot was our readiness proof,
+        so the executor silently never armed — it detected 103 MLB 4% arbs in one
+        evening and attempted zero trades. Verified with both this client and the
+        SDK's own `PrivateWebSocket`: zero frames on ORDER, POSITION and
+        ACCOUNT_BALANCE with no open orders/positions.
+
+        There is now no way to prove the order channel is live without placing an
+        order, so readiness is a WEAKER guarantee than before: it proves the
+        socket connected, the subscribes were sent, and the credentials work
+        against REST. A missed terminal order event is still covered by the
+        executor's `portfolio.positions()` fallback after `await_terminal()`
+        times out — that safety net is what makes this acceptable.
+        """
+        if self._ready.is_set():
+            return
+        try:
+            from polymarket_us import PolymarketUS
+
+            client = PolymarketUS(key_id=self._key_id, secret_key=self._secret_key)
+            balances = await asyncio.to_thread(client.account.balances)
+        except Exception as exc:
+            log.error(
+                "PolyUS private WS: readiness check FAILED (%s) — executor stays "
+                "disabled; no trading until the account endpoint responds", exc,
+            )
+            return
+
+        entries = (balances or {}).get("balances") or []
+        buying_power = entries[0].get("buyingPower") if entries else None
+        self._ready.set()
+        log.info(
+            "PolyUS private WS: ready (subscribes sent, credentials verified, "
+            "buying power %s)", buying_power,
+        )
 
     async def _send_subscribe(self, ws) -> None:
         # Subscribe to orders first (the channel we care about) then balance.
@@ -188,6 +229,8 @@ class PolymarketUSPrivateWSClient:
                 or msg.get("accountBalancesSnapshot")
             )
             if balance_snap is not None:
+                # Polymarket stopped sending this in Sept 2026; kept so we pick
+                # the stronger proof back up automatically if it returns.
                 self._ready.set()
                 log.info("PolyUS private WS: ready (balance snapshot received)")
                 return

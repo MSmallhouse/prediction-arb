@@ -12,6 +12,8 @@ every Poly WS update. Expired trackers auto-flush to CSV.
 """
 
 import csv
+
+import csv_writer
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -234,35 +236,35 @@ def _flush_one(token_id: str) -> None:
     if not tracker.rows:
         return
 
-    write_header = not CONVERGENCE_LOG.exists()
-    with CONVERGENCE_LOG.open("a", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=_FIELDNAMES)
-        if write_header:
-            writer.writeheader()
+    sport = "MLB" if "mlb" in tracker.game.lower() or "mlb" in tracker.arb_id else ""
+    if not sport:
+        sport = tracker.sport
 
-        sport = "MLB" if "mlb" in tracker.game.lower() or "mlb" in tracker.arb_id else ""
-        if not sport:
-            sport = tracker.sport
+    initial_kalshi = tracker.rows[0].get("kalshi_ask_now", tracker.kalshi_ask) if tracker.rows else tracker.kalshi_ask
 
-        initial_kalshi = tracker.rows[0].get("kalshi_ask_now", tracker.kalshi_ask) if tracker.rows else tracker.kalshi_ask
+    # Rows are built here on the event loop; the csv_writer thread owns the
+    # file I/O. This used to be a synchronous write reached from every poly
+    # tick via flush_expired().
+    out_rows = []
+    for row in tracker.rows:
+        out_rows.append({
+            "arb_id": tracker.arb_id,
+            "game": tracker.game,
+            "sport": sport,
+            "opener": tracker.opener,
+            "arb_gross": f"{tracker.arb_gross:.4f}",
+            "kalshi_ask_initial": f"{initial_kalshi:.4f}",
+            "kalshi_side": tracker.kalshi_side,
+            "poly_team": tracker.poly_team,
+            "t_offset_ms": row["t_offset_ms"],
+            "poly_ask": f"{row['poly_ask']:.4f}",
+            "poly_bid": f"{row['poly_bid']:.4f}",
+            "poly_depth": f"{row['poly_depth']:.0f}",
+            "kalshi_ask_now": f"{row.get('kalshi_ask_now', initial_kalshi):.4f}",
+            "source": row["source"],
+        })
 
-        for row in tracker.rows:
-            writer.writerow({
-                "arb_id": tracker.arb_id,
-                "game": tracker.game,
-                "sport": sport,
-                "opener": tracker.opener,
-                "arb_gross": f"{tracker.arb_gross:.4f}",
-                "kalshi_ask_initial": f"{initial_kalshi:.4f}",
-                "kalshi_side": tracker.kalshi_side,
-                "poly_team": tracker.poly_team,
-                "t_offset_ms": row["t_offset_ms"],
-                "poly_ask": f"{row['poly_ask']:.4f}",
-                "poly_bid": f"{row['poly_bid']:.4f}",
-                "poly_depth": f"{row['poly_depth']:.0f}",
-                "kalshi_ask_now": f"{row.get('kalshi_ask_now', initial_kalshi):.4f}",
-                "source": row["source"],
-            })
+    csv_writer.queue_rows(CONVERGENCE_LOG, _FIELDNAMES, out_rows)
 
     log.debug(
         "Convergence: flushed %d ticks for %s (%s)",

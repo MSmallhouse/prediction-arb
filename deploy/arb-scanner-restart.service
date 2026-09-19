@@ -1,0 +1,6 @@
+[Unit]
+Description=Daily recycle of arb-scanner (memory leak mitigation)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl restart arb-scanner.service

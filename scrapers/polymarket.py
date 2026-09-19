@@ -110,6 +110,28 @@ def _kalshi_abbr_to_poly(kalshi_abbr: str, sport: str) -> Optional[str]:
     return poly_abbr
 
 
+# ── College football slug registry ────────────────────────────────────────────
+# CFB is the one sport whose Polymarket slug cannot be derived from the Kalshi
+# ticker: Kalshi writes `KXNCAAFGAME-26SEP19UNCCLEM`, Polymarket writes
+# `cfb-ncar-clmsn-2026-09-19` — different abbreviation schemes entirely. Instead
+# `main` joins the two on (normalised team pair + kickoff date) at discovery and
+# registers the result here, so `kalshi_ticker_to_poly_slug()` stays the single
+# lookup used by `find_arbs()`.
+_cfb_ticker_to_slug: dict[str, str] = {}
+
+
+def register_cfb_slug_map(mapping: dict[str, str]) -> None:
+    """Replace the CFB ticker→slug map (called once per discovery cycle)."""
+    global _cfb_ticker_to_slug
+    _cfb_ticker_to_slug = dict(mapping)
+    log.info("CFB slug map: %d Kalshi events joined to Polymarket", len(_cfb_ticker_to_slug))
+
+
+def cfb_slug_map() -> dict[str, str]:
+    """Current CFB ticker→slug map (read-only view for diagnostics)."""
+    return dict(_cfb_ticker_to_slug)
+
+
 def kalshi_ticker_to_poly_slug(event_ticker: str) -> Optional[str]:
     """
     Derive Polymarket event slug from a Kalshi event ticker.
@@ -119,6 +141,10 @@ def kalshi_ticker_to_poly_slug(event_ticker: str) -> Optional[str]:
     NBA: "KXNBAGAME-26APR27MINDEN"     → "nba-min-den-2026-04-27"
     NHL: "KXNHLGAME-26APR26EDMANA"     → "nhl-edm-ana-2026-04-26"
     """
+    if event_ticker.startswith("KXNCAAFGAME"):
+        # Not derivable — resolved by the name-pair join at discovery time.
+        return _cfb_ticker_to_slug.get(event_ticker)
+
     if event_ticker.startswith("KXNHLGAME"):
         m = _NHL_TICKER_RE.match(event_ticker)
         sport = "nhl"

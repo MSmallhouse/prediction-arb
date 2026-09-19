@@ -66,12 +66,104 @@ class ArbOpportunity:
         )
 
 
+def evaluate_event(
+    event_ticker: str,
+    k_markets: list[KalshiMarket],
+    poly_by_key: dict[tuple[str, str], PolymarketMarket],
+) -> list[ArbOpportunity]:
+    """
+    Arb opportunities for ONE game.
+
+    Split out of `find_arbs()` so a WS tick can re-price just the game that
+    moved. Rescanning every game on every tick made per-tick cost O(markets)
+    while tick rate also scales with market count — i.e. quadratic in slate
+    size. Callers must pass only WS-confirmed markets, same as before.
+    """
+    opps: list[ArbOpportunity] = []
+    if len(k_markets) != 2:
+        return opps
+
+    poly_slug = kalshi_ticker_to_poly_slug(event_ticker)
+    if poly_slug is None:
+        return opps
+
+    team_a, team_b = k_markets[0], k_markets[1]
+
+    # Two arb directions, each checking YES vs opposing NO:
+    for k_market, opp_k_market, opposing_team in [
+        (team_a, team_b, team_b.team),
+        (team_b, team_a, team_a.team),
+    ]:
+        p_market = poly_by_key.get((poly_slug, opposing_team))
+        if p_market is None:
+            continue
+
+        # Reject if game datetimes differ by more than 12h
+        dt_diff = abs((k_market.game_datetime - p_market.game_datetime).total_seconds())
+        if dt_diff > 12 * 3600:
+            log.debug(
+                "Skipping %s/%s: datetime mismatch (diff %.1fh)",
+                k_market.team, p_market.team, dt_diff / 3600,
+            )
+            continue
+
+        # Pick cheaper Kalshi exposure: YES on k_market vs NO on opp_k_market
+        yes_ask = k_market.yes_ask
+        no_ask = opp_k_market.no_ask
+        if 0 < no_ask < 1 and no_ask < yes_ask:
+            p1 = no_ask
+            kalshi_side = "NO"
+            kalshi_order_market = opp_k_market
+            kalshi_price_ts = opp_k_market.fetched_at
+        else:
+            p1 = yes_ask
+            kalshi_side = "YES"
+            kalshi_order_market = k_market
+            kalshi_price_ts = k_market.fetched_at
+
+        p2 = p_market.yes_ask
+
+        if p1 <= 0 or p2 <= 0 or p1 >= 1 or p2 >= 1:
+            continue
+
+        gross = 1.0 - p1 - p2
+        fk = kalshi_fee(p1)
+        fp = poly_fee(p2)
+        net_pre = gross - fk - fp
+        net_after = net_pre * AFTER_TAX_MULTIPLIER
+
+        if gross < MIN_GROSS_SPREAD - 1e-9:
+            continue
+
+        opp = ArbOpportunity(
+            game_datetime=p_market.game_datetime,
+            away_team=p_market.event_slug.split("-")[1].upper(),
+            home_team=p_market.event_slug.split("-")[2].upper(),
+            kalshi_market=k_market,
+            poly_market=p_market,
+            gross_spread=gross,
+            kalshi_fee=fk,
+            poly_fee=fp,
+            net_pretax=net_pre,
+            net_aftertax=net_after,
+            kalshi_side=kalshi_side,
+            kalshi_ask=p1,
+            kalshi_order_market=kalshi_order_market,
+            kalshi_price_ts=kalshi_price_ts,
+        )
+        opps.append(opp)
+
+    return opps
+
+
 def find_arbs(
     kalshi_markets: list[KalshiMarket],
     poly_markets: list[PolymarketMarket],
 ) -> list[ArbOpportunity]:
     """
     Match Kalshi and Polymarket markets for the same game, then check arb.
+    Full scan over every game — used at startup and after discovery. The live
+    tick path uses `evaluate_event()` for the single game that changed.
 
     Arb logic:
       To express "Team A wins" on Kalshi, pick cheaper of:
@@ -80,91 +172,17 @@ def find_arbs(
       Then pair with "Team B wins" on Polymarket (YES ask).
       One side always pays $1 → gross spread S = 1 - P1 - P2
     """
-    # Index Polymarket markets by (event_slug, canonical_team)
     poly_by_key: dict[tuple[str, str], PolymarketMarket] = {}
     for pm in poly_markets:
         poly_by_key[(pm.event_slug, pm.team)] = pm
 
-    opps: list[ArbOpportunity] = []
-
-    # Group Kalshi markets by event
     kalshi_by_event: dict[str, list[KalshiMarket]] = {}
     for km in kalshi_markets:
         kalshi_by_event.setdefault(km.event_ticker, []).append(km)
 
+    opps: list[ArbOpportunity] = []
     for event_ticker, k_markets in kalshi_by_event.items():
-        if len(k_markets) != 2:
-            continue
-
-        poly_slug = kalshi_ticker_to_poly_slug(event_ticker)
-        if poly_slug is None:
-            continue
-
-        team_a, team_b = k_markets[0], k_markets[1]
-
-        # Two arb directions, each checking YES vs opposing NO:
-        for k_market, opp_k_market, opposing_team in [
-            (team_a, team_b, team_b.team),
-            (team_b, team_a, team_a.team),
-        ]:
-            p_market = poly_by_key.get((poly_slug, opposing_team))
-            if p_market is None:
-                continue
-
-            # Reject if game datetimes differ by more than 12h
-            dt_diff = abs((k_market.game_datetime - p_market.game_datetime).total_seconds())
-            if dt_diff > 12 * 3600:
-                log.debug(
-                    "Skipping %s/%s: datetime mismatch (diff %.1fh)",
-                    k_market.team, p_market.team, dt_diff / 3600,
-                )
-                continue
-
-            # Pick cheaper Kalshi exposure: YES on k_market vs NO on opp_k_market
-            yes_ask = k_market.yes_ask
-            no_ask = opp_k_market.no_ask
-            if 0 < no_ask < 1 and no_ask < yes_ask:
-                p1 = no_ask
-                kalshi_side = "NO"
-                kalshi_order_market = opp_k_market
-                kalshi_price_ts = opp_k_market.fetched_at
-            else:
-                p1 = yes_ask
-                kalshi_side = "YES"
-                kalshi_order_market = k_market
-                kalshi_price_ts = k_market.fetched_at
-
-            p2 = p_market.yes_ask
-
-            if p1 <= 0 or p2 <= 0 or p1 >= 1 or p2 >= 1:
-                continue
-
-            gross = 1.0 - p1 - p2
-            fk = kalshi_fee(p1)
-            fp = poly_fee(p2)
-            net_pre = gross - fk - fp
-            net_after = net_pre * AFTER_TAX_MULTIPLIER
-
-            if gross < MIN_GROSS_SPREAD - 1e-9:
-                continue
-
-            opp = ArbOpportunity(
-                game_datetime=p_market.game_datetime,
-                away_team=p_market.event_slug.split("-")[1].upper(),
-                home_team=p_market.event_slug.split("-")[2].upper(),
-                kalshi_market=k_market,
-                poly_market=p_market,
-                gross_spread=gross,
-                kalshi_fee=fk,
-                poly_fee=fp,
-                net_pretax=net_pre,
-                net_aftertax=net_after,
-                kalshi_side=kalshi_side,
-                kalshi_ask=p1,
-                kalshi_order_market=kalshi_order_market,
-                kalshi_price_ts=kalshi_price_ts,
-            )
-            opps.append(opp)
+        opps.extend(evaluate_event(event_ticker, k_markets, poly_by_key))
 
     opps.sort(key=lambda o: o.gross_spread, reverse=True)
     return opps

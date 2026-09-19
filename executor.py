@@ -73,6 +73,7 @@ class ExecutionConfig:
     min_buy_price: float = 0.15         # skip teams below 15c (likely losing, heading to 0c)
     max_buy_price: float = 1.00         # no upper cap — buying 90c+ teams heading to 100c is profitable
     max_trades: int = 1                 # stop executing after this many completed trades (0 = unlimited)
+    excluded_sports: frozenset = frozenset({"CFB"})  # detect-only sports — arbs logged, never traded
     kalshi_velocity_threshold: float = 0.05  # skip if Kalshi yes_ask moved >5c in velocity window
     kalshi_velocity_window_s: float = 2.0    # lookback window for velocity check (seconds)
 
@@ -82,6 +83,10 @@ config = ExecutionConfig()
 # Active executions — prevent duplicate fires on flickering arbs
 _in_flight: set[str] = set()
 _trade_count: int = 0
+# Execution attempts (orders actually sent), regardless of outcome. Used by the
+# health check to catch "detecting arbs but never firing" — the exact shape of
+# the 2026-09-19 outage, where a readiness flag blocked every trade silently.
+attempt_count: int = 0
 
 # Event-driven price monitoring: active positions waiting for convergence
 # Each entry is an asyncio.Event that gets set when WS updates the price
@@ -99,6 +104,12 @@ _active_positions: dict[str, _ActivePosition] = {}  # poly_token_id → position
 # When None or not ready, executor disables itself (no fast fill detection).
 _private_ws = None
 ORDER_TERMINAL_TIMEOUT = 1.0  # seconds to wait for terminal state via WS
+MAX_TAKER_EXIT_ATTEMPTS = 3   # retry IOC taker exits when bid moves between read and place
+
+# Positions where every taker-exit attempt failed. Surfaces the FOK/IOC race
+# where bid moves between read and order arrival. Operator must close manually
+# (or rely on reconcile.py). Kept in-memory only — log line is the durable record.
+_stuck_positions: list[dict] = []
 
 # Kalshi WS client — used for velocity filter (set from main.py at startup).
 _kalshi_ws = None
@@ -149,6 +160,12 @@ def _log_execution(row: dict) -> None:
         writer.writerow(row)
 
 
+def _sport_from_slug(event_slug: str) -> str:
+    """Sport label from a Polymarket event slug (e.g. "cfb-ncar-clmsn-..." -> "CFB")."""
+    prefix = (event_slug or "").split("-")[0].lower()
+    return {"mlb": "MLB", "nba": "NBA", "nhl": "NHL", "cfb": "CFB"}.get(prefix, prefix.upper())
+
+
 async def maybe_execute(
     client: PolymarketUS,
     opp,
@@ -166,6 +183,14 @@ async def maybe_execute(
         return
 
     if config.only_kalshi_opener and opener != "kalshi":
+        return
+
+    # Detect-only sports: log the arb, never trade it. CFB is here while we
+    # gather data — its price dynamics (7-point scoring swings) have not been
+    # measured against the velocity and price-drop thresholds, which were tuned
+    # on baseball and hockey.
+    sport = _sport_from_slug(getattr(opp.poly_market, "event_slug", ""))
+    if sport in config.excluded_sports:
         return
 
     if opp.gross_spread < config.min_gross_spread - 1e-9:
@@ -211,10 +236,12 @@ async def maybe_execute(
         order_price = round(1.0 - opp.poly_market.yes_ask, 2)
 
     market_slug = poly_token.rsplit(":", 1)[0] if ":" in poly_token else poly_token
-    sport = "MLB" if "mlb" in opp.poly_market.event_slug else ("NBA" if "nba" in opp.poly_market.event_slug else "NHL")
+    sport = _sport_from_slug(opp.poly_market.event_slug)
 
     _in_flight.add(arb_key)
 
+    global attempt_count  # noqa: PLW0603
+    attempt_count += 1
     asyncio.create_task(
         _execute_trade(
             client=client,
@@ -503,7 +530,9 @@ async def _execute_trade(
             game, profit, hold_time_ms,
         )
     else:
-        # Cancel maker sell, then market sell at bid
+        # Cancel maker sell, then taker exit at bid with retry. IOC + terminal-state
+        # check + chase-by-1c retry handles the FOK race that previously left
+        # positions silently open until game expiry.
         if sell_order_id:
             try:
                 await asyncio.to_thread(
@@ -512,15 +541,27 @@ async def _execute_trade(
             except Exception:
                 pass
 
-        market = poly_by_token.get(poly_token_id)
-        current_bid = market.yes_bid if market else 0
+        sell_price = 0.0
+        sell_fee = 0.0
+        exit_order_id = ""
+        exit_state = ""
+        for attempt in range(MAX_TAKER_EXIT_ATTEMPTS):
+            market = poly_by_token.get(poly_token_id)
+            current_bid = market.yes_bid if market else 0
+            if current_bid <= 0:
+                exit_state = "NO_BID"
+                break
 
-        if current_bid > 0:
-            # For SELL_SHORT, invert the price for the API
-            exit_order_price = round(1.0 - current_bid, 2) if is_short else current_bid
+            # Each retry, accept 1c worse to chase a moving market.
+            target_bid = round(current_bid - attempt * 0.01, 2)
+            if target_bid <= 0:
+                exit_state = "BID_TOO_LOW"
+                break
+            exit_order_price = round(1.0 - target_bid, 2) if is_short else target_bid
+
             try:
                 t_exit = time.monotonic()
-                await asyncio.to_thread(
+                result = await asyncio.to_thread(
                     client.orders.create,
                     {
                         "marketSlug": market_slug,
@@ -528,19 +569,47 @@ async def _execute_trade(
                         "type": "ORDER_TYPE_LIMIT",
                         "price": {"value": str(exit_order_price), "currency": "USD"},
                         "quantity": config.quantity,
-                        "tif": "TIME_IN_FORCE_FILL_OR_KILL",
+                        "tif": "TIME_IN_FORCE_IMMEDIATE_OR_CANCEL",
                     },
                 )
                 sell_latency = (time.monotonic() - t_exit) * 1000
-                sell_price = current_bid
-                sell_fee = 0.05 * sell_price * (1 - sell_price)
+                exit_order_id = result.get("id", "")
             except Exception as exc:
-                log.error("  EXIT sell failed: %s", exc)
-                sell_price = 0
-                sell_fee = 0
-        else:
-            sell_price = 0
-            sell_fee = 0
+                log.error("  EXIT attempt %d create failed: %s", attempt + 1, exc)
+                exit_state = f"CREATE_ERROR: {exc}"
+                continue
+
+            if not exit_order_id:
+                exit_state = "NO_ORDER_ID"
+                continue
+
+            try:
+                terminal = await _private_ws.await_terminal(
+                    exit_order_id, timeout=ORDER_TERMINAL_TIMEOUT,
+                )
+                cum = int(terminal.get("cumQuantity", 0) or 0)
+                exit_state = terminal.get("state", "UNKNOWN")
+            except asyncio.TimeoutError:
+                cum = 0
+                exit_state = "WS_TIMEOUT"
+
+            log.info("  EXIT attempt %d: id=%s state=%s cumQty=%d price=%.3f",
+                     attempt + 1, exit_order_id, exit_state, cum, target_bid)
+
+            if cum > 0:
+                sell_price = target_bid
+                sell_fee = 0.05 * sell_price * (1 - sell_price)
+                break
+
+        if sell_price == 0:
+            exit_reason = "exit_failed"
+            log.error("  EXIT FAILED after %d attempts — POSITION STILL OPEN: %s intent=%s buy=%.3f",
+                      MAX_TAKER_EXIT_ATTEMPTS, market_slug, intent, buy_price)
+            _stuck_positions.append({
+                "arb_id": arb_id, "market_slug": market_slug, "intent": intent,
+                "buy_price": buy_price, "qty": config.quantity,
+                "last_state": exit_state,
+            })
 
         profit = sell_price - buy_price - buy_fee - sell_fee if sell_price > 0 else -(buy_price + buy_fee)
         log.info(
@@ -561,10 +630,10 @@ async def _execute_trade(
         "buy_fee": f"{buy_fee:.4f}",
         "sell_fee": f"{sell_fee:.4f}" if sell_fee else "0.0000",
         "hold_time_ms": f"{hold_time_ms:.0f}",
-        "order_id": sell_order_id or buy_order_id,
+        "order_id": (exit_order_id if exit_reason != "converged" else sell_order_id) or buy_order_id,
         "poly_bid_at_exit": f"{current_bid:.4f}",
         "exit_reason": exit_reason,
-        "error": "",
+        "error": exit_state if exit_reason == "exit_failed" else "",
         "buy_latency_ms": f"{buy_latency:.0f}",
         "sell_latency_ms": f"{sell_latency:.0f}",
         "poly_depth": poly_depth,

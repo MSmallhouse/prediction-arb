@@ -8,37 +8,80 @@ polymarket.us is a separate CFTC-regulated platform (QCX LLC) from polymarket.co
 Auth: ED25519 (keys generated at polymarket.us/developer after KYC via iOS app).
 SDK: polymarket-us (pip package).
 
-Series IDs:
+Series IDs (pass as "seriesId": [int] — a snake_case "series_id" is ignored by
+the gateway and silently returns every series):
   MLB 2026: 15
   NBA 2025: 4  (covers 2025-26 season through April 2026)
   NHL 2025: 6  (covers 2025-26 season through May 2026)
 """
 
 import logging
+import re
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from polymarket_us import PolymarketUS
+from config import POLY_US_CFB_SERIES_ID, normalize_cfb_team
 from scrapers.polymarket import _normalize_poly_team
 
 log = logging.getLogger(__name__)
 
-# Series IDs for each sport on polymarket.us
+# Series IDs for each sport on polymarket.us. Seeded with known values and
+# refreshed from /v1/series at discovery: each season gets a NEW series (slug
+# "<sport>-<year>"), so a hardcoded id silently stops matching when the season
+# rolls over. A sport whose new-season series does not exist yet keeps its old
+# id and simply matches nothing until Polymarket creates it.
 POLY_US_SERIES = {
     "mlb": "15",
     "nba": "4",
     "nhl": "6",
 }
 
-# Cached offsets: start scanning from here to find current events.
-# Events are chronological (oldest first); these skip past resolved history.
-# Updated automatically when the cached offset returns only old events.
-_offset_cache: dict[str, int] = {
-    "mlb": 400,
-    "nba": 1000,
-    "nhl": 800,
-}
+_SERIES_SLUG_RE = re.compile(r"^(mlb|nba|nhl)-(\d{4})$")
+
+
+def refresh_series_ids(client: PolymarketUS) -> dict[str, str]:
+    """
+    Re-resolve each sport's series id to the newest season Polymarket lists.
+    Mutates and returns POLY_US_SERIES. Failures leave the current ids intact.
+    """
+    try:
+        resp = client.series.list()
+    except Exception as exc:
+        log.warning("polymarket.us series list failed (%s) — keeping series ids %s",
+                    exc, POLY_US_SERIES)
+        return POLY_US_SERIES
+
+    items = resp.get("series", []) if isinstance(resp, dict) else (resp or [])
+    newest: dict[str, tuple[int, str]] = {}
+    for entry in items:
+        match = _SERIES_SLUG_RE.match(str(entry.get("slug", "")))
+        if not match:
+            continue
+        sport, year = match.group(1), int(match.group(2))
+        series_id = str(entry.get("id", ""))
+        if not series_id:
+            continue
+        if sport not in newest or year > newest[sport][0]:
+            newest[sport] = (year, series_id)
+
+    for sport, (year, series_id) in newest.items():
+        if POLY_US_SERIES.get(sport) != series_id:
+            log.info("polymarket.us %s series -> %s (%s-%d)", sport, series_id, sport, year)
+            POLY_US_SERIES[sport] = series_id
+    return POLY_US_SERIES
+
+# The gateway ignores an unknown "series_id" query param and returns events from
+# every series (NFL included). The parameter it honours is "seriesId" as a list
+# of ints, alongside ISO-8601 startDateMin/startDateMax. Discovery now queries
+# the exact date window instead of paging blindly through history — the old
+# offset-scan silently matched zero markets once the season moved past its
+# hardcoded offsets.
+PAGE_SIZE = 200
+MAX_PAGES = 10
+CFB_PAGE_SIZE = 50
+DATE_PAD_DAYS = 1
 
 
 @dataclass
@@ -72,88 +115,36 @@ def _parse_datetime(dt_str: str) -> datetime:
         return datetime.now(timezone.utc)
 
 
-def discover_moneyline_markets(
-    client: PolymarketUS,
-    sport: str,
+# The game-winner market used to be tagged sportsMarketType == "moneyline".
+# It is now sport-specific ("baseball_team_full_game_winner",
+# "basketball_team_full_game_winner", ...), and sits alongside first-five and
+# per-inning winner markets that share sportsMarketTypeV2 == MONEYLINE. Match on
+# the full-game suffix, keeping the legacy value as a fallback.
+_LEGACY_MONEYLINE = "moneyline"
+_FULL_GAME_WINNER_SUFFIX = "_full_game_winner"
+
+
+def _pick_full_game_moneyline(event: dict) -> Optional[dict]:
+    """The full-game winner market for an event, or None."""
+    fallback = None
+    for m in event.get("markets", []):
+        mtype = m.get("sportsMarketType") or ""
+        if mtype.endswith(_FULL_GAME_WINNER_SUFFIX):
+            return m
+        if mtype == _LEGACY_MONEYLINE:
+            fallback = m
+    return fallback
+
+
+def _extract_markets(
+    events: list[dict],
     kalshi_event_slugs: set[str],
 ) -> list[PolymarketUSMarket]:
-    """
-    Fetch moneyline markets from polymarket.us for a given sport.
+    """Pull the full-game moneyline out of one page of events."""
+    markets_out: list[PolymarketUSMarket] = []
 
-    Uses offset caching: starts scanning from a cached position that skips
-    past resolved historical events. If the cached offset is stale (returns
-    only old events), scans forward. If it's too far ahead, scans back.
-    Typically fetches 1-2 pages (~2-4s) instead of 10+ (~30s).
-    """
-    series_id = POLY_US_SERIES.get(sport)
-    if series_id is None:
-        log.warning("Unknown sport for polymarket.us: %s", sport)
-        return []
-
-    sport_slugs = [s for s in kalshi_event_slugs if s.startswith(sport + "-")]
-    if not sport_slugs:
-        return []
-    earliest_date = min(s[-10:] for s in sport_slugs)
-
-    start_offset = _offset_cache.get(sport, 0)
-    relevant_events = []
-    pages_fetched = 0
-
-    # Scan forward from cached offset
-    for offset in range(start_offset, start_offset + 600, 200):
-        try:
-            resp = client.events.list({"series_id": series_id, "limit": 200, "offset": offset})
-            batch = resp.get("events", [])
-        except Exception as exc:
-            log.error("polymarket.us fetch failed (series=%s offset=%d): %s", series_id, offset, exc)
-            break
-        if not batch:
-            break
-
-        pages_fetched += 1
-        relevant_events.extend(batch)
-
-        # Check if we've gone past all our dates
-        latest_in_batch = max(e.get("startDate", "")[:10] for e in batch)
-        latest_kalshi_date = max(s[-10:] for s in sport_slugs)
-        if latest_in_batch > latest_kalshi_date:
-            break  # We've covered all Kalshi dates
-
-    # If cached offset was too high (no matches), scan backwards
-    if not relevant_events and start_offset > 0:
-        log.info("polymarket.us %s: cached offset %d too high, scanning back", sport, start_offset)
-        for offset in range(max(0, start_offset - 400), start_offset, 200):
-            try:
-                resp = client.events.list({"series_id": series_id, "limit": 200, "offset": offset})
-                batch = resp.get("events", [])
-            except Exception as exc:
-                break
-            if not batch:
-                break
-            pages_fetched += 1
-            relevant_events.extend(batch)
-
-    # Update the offset cache: find where relevant events start
-    # so next call can skip directly there
-    if relevant_events:
-        for i, e in enumerate(relevant_events):
-            if e.get("startDate", "")[:10] >= earliest_date:
-                # This event is in range — cache the offset that would include it
-                new_offset = start_offset + (i // 200) * 200
-                if new_offset != _offset_cache.get(sport):
-                    _offset_cache[sport] = new_offset
-                    log.debug("polymarket.us %s: updated offset cache to %d", sport, new_offset)
-                break
-
-    # Extract moneyline markets and match to Kalshi
-    markets_out = []
-
-    for event in relevant_events:
-        moneyline = None
-        for m in event.get("markets", []):
-            if m.get("sportsMarketType") == "moneyline":
-                moneyline = m
-                break
+    for event in events:
+        moneyline = _pick_full_game_moneyline(event)
         if moneyline is None:
             continue
 
@@ -202,11 +193,141 @@ def discover_moneyline_markets(
             opposing_bid=round(1.0 - yes_ask, 4) if yes_ask < 1 else 0.0,
         ))
 
+    return markets_out
+
+
+def discover_moneyline_markets(
+    client: PolymarketUS,
+    sport: str,
+    kalshi_event_slugs: set[str],
+) -> list[PolymarketUSMarket]:
+    """
+    Fetch moneyline markets from polymarket.us for a given sport.
+
+    Queries the gateway for the exact date window covering the open Kalshi
+    games, then matches by slug. One page is normally enough.
+    """
+    series_id = POLY_US_SERIES.get(sport)
+    if series_id is None:
+        log.warning("Unknown sport for polymarket.us: %s", sport)
+        return []
+
+    sport_slugs = [s for s in kalshi_event_slugs if s.startswith(sport + "-")]
+    if not sport_slugs:
+        return []
+
+    pad = timedelta(days=DATE_PAD_DAYS)
+    earliest = datetime.strptime(min(s[-10:] for s in sport_slugs), "%Y-%m-%d") - pad
+    latest = datetime.strptime(max(s[-10:] for s in sport_slugs), "%Y-%m-%d") + pad
+
+    # Extract per page and drop the raw payload immediately. Accumulating every
+    # page first kept hundreds of full event dicts live at once — each carries
+    # ~444 markets (props, per-inning, spreads) of which we want exactly one —
+    # and that peak live set is what made gen-2 collections cost 755-1219ms on
+    # this box. Refcounting frees each page as soon as the loop rebinds `batch`.
+    markets_out: list[PolymarketUSMarket] = []
+    pages_fetched = 0
+    for page in range(MAX_PAGES):
+        try:
+            resp = client.events.list({
+                "seriesId": [int(series_id)],
+                "startDateMin": earliest.strftime("%Y-%m-%dT00:00:00Z"),
+                "startDateMax": latest.strftime("%Y-%m-%dT00:00:00Z"),
+                "limit": PAGE_SIZE,
+                "offset": page * PAGE_SIZE,
+            })
+            batch = resp.get("events", [])
+        except Exception as exc:
+            log.error("polymarket.us fetch failed (series=%s page=%d): %s", series_id, page, exc)
+            break
+        pages_fetched += 1
+        markets_out.extend(_extract_markets(batch, kalshi_event_slugs))
+        if len(batch) < PAGE_SIZE:
+            break
+    else:
+        log.warning("polymarket.us %s: hit %d-page cap — events may be missing", sport, MAX_PAGES)
+
     log.info(
-        "polymarket.us %s: %d markets matched (%d pages, offset=%d)",
-        sport.upper(), len(markets_out), pages_fetched, start_offset,
+        "polymarket.us %s: %d markets matched (%d pages, %s..%s)",
+        sport.upper(), len(markets_out), pages_fetched,
+        earliest.strftime("%Y-%m-%d"), latest.strftime("%Y-%m-%d"),
     )
     return markets_out
+
+
+def discover_cfb_markets(
+    client: PolymarketUS,
+    window_start: datetime,
+    window_end: datetime,
+) -> list[PolymarketUSMarket]:
+    """
+    College football moneylines in a kickoff window.
+
+    Unlike the pro leagues this canNOT filter by slug: Kalshi's CFB tickers
+    (`KXNCAAFGAME-26SEP19UNCCLEM`) do not derive Polymarket's slugs
+    (`cfb-ncar-clmsn-2026-09-19`). We pull every CFB event in the window and
+    let `main` join them to Kalshi on (team pair + kickoff date). Team names
+    are the normalised school name on BOTH sides so the join key lines up.
+    """
+    out: list[PolymarketUSMarket] = []
+    pages = 0
+    for page in range(MAX_PAGES):
+        try:
+            resp = client.events.list({
+                "seriesId": [int(POLY_US_CFB_SERIES_ID)],
+                "startDateMin": window_start.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "startDateMax": window_end.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "limit": CFB_PAGE_SIZE,
+                "offset": page * CFB_PAGE_SIZE,
+            })
+            batch = resp.get("events", [])
+        except Exception as exc:
+            log.error("polymarket.us CFB fetch failed (page=%d): %s", page, exc)
+            break
+        pages += 1
+        for event in batch:
+            market = _pick_full_game_moneyline(event)
+            if market is None:
+                continue
+            sides = market.get("marketSides", [])
+            if len(sides) != 2:
+                continue
+            long_side = next((x for x in sides if x.get("long")), None)
+            short_side = next((x for x in sides if not x.get("long")), None)
+            if long_side is None or short_side is None:
+                continue
+            long_team = normalize_cfb_team((long_side.get("team") or {}).get("safeName", ""))
+            short_team = normalize_cfb_team((short_side.get("team") or {}).get("safeName", ""))
+            if not long_team or not short_team:
+                continue
+
+            best_bid = market.get("bestBidQuote", {}).get("value") if market.get("bestBidQuote") else None
+            best_ask = market.get("bestAskQuote", {}).get("value") if market.get("bestAskQuote") else None
+            yes_bid = float(best_bid) if best_bid else 0.0
+            yes_ask = float(best_ask) if best_ask else 1.0
+
+            game_start = market.get("gameStartTime") or event.get("startDate", "")
+            out.append(PolymarketUSMarket(
+                event_slug=_strip_aec_prefix(event.get("slug", "")),
+                market_slug=market.get("slug", ""),
+                market_id=str(market.get("id", "")),
+                team=long_team,
+                opposing_team=short_team,
+                game_datetime=_parse_datetime(game_start),
+                yes_ask=yes_ask,
+                yes_bid=yes_bid,
+                opposing_ask=round(1.0 - yes_bid, 4) if yes_bid > 0 else 1.0,
+                opposing_bid=round(1.0 - yes_ask, 4) if yes_ask < 1 else 0.0,
+            ))
+        if len(batch) < CFB_PAGE_SIZE:
+            break
+    else:
+        log.warning("polymarket.us CFB: hit %d-page cap — events may be missing", MAX_PAGES)
+
+    log.info("polymarket.us CFB: %d moneyline markets (%d pages, %s..%s)",
+             len(out), pages, window_start.strftime("%Y-%m-%d %H:%M"),
+             window_end.strftime("%Y-%m-%d %H:%M"))
+    return out
 
 
 def discover_all_sports(
@@ -214,6 +335,7 @@ def discover_all_sports(
     kalshi_event_slugs: set[str],
 ) -> list[PolymarketUSMarket]:
     """Discover moneyline markets for MLB + NBA + NHL."""
+    refresh_series_ids(client)
     markets = []
     for sport in ["mlb", "nba", "nhl"]:
         markets.extend(discover_moneyline_markets(client, sport, kalshi_event_slugs))

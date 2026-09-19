@@ -330,6 +330,57 @@ KALSHI_NHL_SERIES = "KXNHLGAME"
 
 # Maps Kalshi yes_sub_title (label format: "{ABBR} {Nickname}") → canonical NHL team name.
 # Utah Hockey Club uses "UTA Mammoth" label but canonical = "Utah" (Polymarket outcome label).
+# ── College football (CFB) ────────────────────────────────────────────────────
+# CFB has ~250 FBS+FCS teams, far too many to hand-map like the pro leagues.
+# Both platforms expose the SCHOOL name (Kalshi `yes_sub_title`, Polymarket
+# `team.safeName`), so canonical names are derived by normalising those strings
+# instead of via a lookup table. Only genuine spelling divergences need an entry
+# below — measured 2026-09-19: 12 of 250 Kalshi names failed to join.
+#
+# Kalshi abbreviations are NOT usable for slug derivation here: Kalshi writes
+# `KXNCAAFGAME-26SEP19UNCCLEM` while Polymarket writes `cfb-ncar-clmsn-...`.
+# Matching is done on (normalised team pair + kickoff date) instead — see
+# `scrapers.polymarket.register_cfb_slug_map`.
+KALSHI_CFB_SERIES = "KXNCAAFGAME"
+
+# Polymarket series id for the current CFB season. NOTE: `client.series.list()`
+# does NOT return this series, so `refresh_series_ids()` cannot discover it —
+# the id was read from an event's `primaryTag.league.activeSeriesId` (cfb-2026).
+# If CFB discovery starts returning zero events, re-check that field first.
+POLY_US_CFB_SERIES_ID = "225"
+
+# Normalised-Kalshi-name → normalised-Polymarket-name. Keys/values are the
+# output of `normalize_cfb_team()`, not the raw strings.
+CFB_NAME_ALIASES = {
+    "louisiana":            "louisianalafayette",
+    "mcneese":              "mcneese state",
+    "merrimack":            "merrimack college",
+    "miami fl":             "miami",
+    "nc state":             "north carolina state",
+    "nicholls state":       "nicholls",
+    "state thomas":         "state thomas mn",
+    "tennesseemartin":      "ut martin",
+    "uconn":                "connecticut",
+    "umass":                "massachusetts",
+    "university at albany": "albany",
+}
+
+
+def normalize_cfb_team(name: str) -> str:
+    """
+    Canonical form of a college team name, shared by both platforms.
+    Lowercase, punctuation stripped, "St." expanded to "state", then any
+    known alias applied. Returns "" for empty input.
+    """
+    import re
+
+    s = (name or "").lower().strip().replace("&", "and")
+    s = re.sub(r"\bst\.?\b", "state", s)
+    s = re.sub(r"[^a-z0-9 ]", "", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return CFB_NAME_ALIASES.get(s, s)
+
+
 NHL_KALSHI_TO_CANONICAL = {
     # Label format (yes_sub_title)
     "ANA Ducks":          "Ducks",
@@ -363,8 +414,44 @@ NHL_KALSHI_TO_CANONICAL = {
     "VGK Golden Knights": "Golden Knights",
     "WPG Jets":           "Jets",
     "WSH Capitals":       "Capitals",
+    # City-only labels (Kalshi switched yes_sub_title to these during 2026;
+    # the "ANA Ducks" form above is kept for older/settled markets).
+    "Anaheim":       "Ducks",
+    "Boston":        "Bruins",
+    "Buffalo":       "Sabres",
+    "Calgary":       "Flames",
+    "Carolina":      "Hurricanes",
+    "Chicago":       "Blackhawks",
+    "Colorado":      "Avalanche",
+    "Columbus":      "Blue Jackets",
+    "Dallas":        "Stars",
+    "Detroit":       "Red Wings",
+    "Edmonton":      "Oilers",
+    "Florida":       "Panthers",
+    "Los Angeles":   "Kings",
+    "Minnesota":     "Wild",
+    "Montreal":      "Canadiens",
+    "Nashville":     "Predators",
+    "New Jersey":    "Devils",
+    "New York I":    "Islanders",
+    "New York R":    "Rangers",
+    "Ottawa":        "Senators",
+    "Philadelphia":  "Flyers",
+    "Pittsburgh":    "Penguins",
+    "San Jose":      "Sharks",
+    "Seattle":       "Kraken",
+    "St. Louis":     "Blues",
+    "Tampa Bay":     "Lightning",
+    "Toronto":       "Maple Leafs",
+    "Utah":          "Utah",
+    "Vancouver":     "Canucks",
+    "Vegas":         "Golden Knights",
+    "Washington":    "Capitals",
+    "Winnipeg":      "Jets",
     # Ticker abbreviations (used in event ticker suffix, e.g. KXNHLGAME-...-EDMDAL)
     "ANA": "Ducks",
+    "CHI": "Blackhawks",
+    "NJ":  "Devils",
     "BOS": "Bruins",
     "BUF": "Sabres",
     "CAR": "Hurricanes",
@@ -475,8 +562,9 @@ NHL_CANONICAL_TO_POLY_ABBR = {
 # NHL Kalshi abbreviations sorted longest-first for greedy split.
 # 3-letter abbrevs before 2-letter (LA, SJ, TB) to prevent false prefix matches.
 NHL_KALSHI_ABBR_SET = sorted([
-    "ANA", "BOS", "BUF", "CAR", "CGY", "CBJ", "COL", "DAL", "DET", "EDM",
-    "FLA", "MIN", "MTL", "NJD", "NSH", "NYI", "NYR", "OTT", "PHI", "PIT",
-    "SEA", "STL", "TOR", "UTA", "VAN", "VGK", "WPG", "WSH",
-    "LA", "SJ", "TB",
+    "ANA", "BOS", "BUF", "CAR", "CGY", "CBJ", "CHI", "COL", "DAL", "DET",
+    "EDM", "FLA", "MIN", "MTL", "NJD", "NSH", "NYI", "NYR", "OTT", "PHI",
+    "PIT", "SEA", "STL", "TOR", "UTA", "VAN", "VGK", "WPG", "WSH",
+    # Kalshi writes the Devils as "NJ" in tickers; "NJD" kept for older ones.
+    "LA", "NJ", "SJ", "TB",
 ], key=len, reverse=True)

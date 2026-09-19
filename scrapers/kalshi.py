@@ -17,12 +17,14 @@ Key Kalshi market structure:
 import asyncio
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import aiohttp
 
 from config import (
+    KALSHI_CFB_SERIES,
+    normalize_cfb_team,
     KALSHI_BASE_URL, KALSHI_MLB_SERIES, KALSHI_NBA_SERIES, KALSHI_NHL_SERIES,
     KALSHI_TO_CANONICAL, NBA_KALSHI_TO_CANONICAL, NHL_KALSHI_TO_CANONICAL,
 )
@@ -57,6 +59,13 @@ class KalshiMarket:
 
 def _normalize_team(kalshi_label: str, event_ticker: str = "") -> Optional[str]:
     """Map Kalshi yes_sub_title to canonical team name (sport-aware)."""
+    if event_ticker.startswith(KALSHI_CFB_SERIES):
+        # ~250 schools — canonical name is derived, not looked up. See config.
+        canonical = normalize_cfb_team(kalshi_label)
+        if not canonical:
+            log.warning("Empty Kalshi CFB team label for %s", event_ticker)
+            return None
+        return canonical
     if event_ticker.startswith("KXNBAGAME"):
         lookup = NBA_KALSHI_TO_CANONICAL
         sport = "NBA"
@@ -190,6 +199,28 @@ async def discover_nba_events(session: aiohttp.ClientSession) -> list[str]:
     return tickers
 
 
+async def discover_cfb_events(
+    session: aiohttp.ClientSession,
+    within_hours: Optional[float] = None,
+) -> list[str]:
+    """
+    Return event tickers for open KXNCAAFGAME events.
+
+    `within_hours` caps how far ahead we look. A Saturday slate is 200+ games
+    and each one costs two Kalshi WS subscriptions plus two Polymarket tokens,
+    so subscribing to the whole week would multiply memory on a 908MB box.
+    The executor only trades inside 180 minutes of kickoff anyway.
+    """
+    markets = await _fetch_series_markets(session, KALSHI_CFB_SERIES)
+    if within_hours is not None:
+        cutoff = datetime.now(timezone.utc) + timedelta(hours=within_hours)
+        markets = [m for m in markets if m.game_datetime <= cutoff]
+    tickers = list({m.event_ticker for m in markets})
+    log.info("Discovered %d open %s events (within %s hours)",
+             len(tickers), KALSHI_CFB_SERIES, within_hours)
+    return tickers
+
+
 async def discover_nhl_events(session: aiohttp.ClientSession) -> list[str]:
     """Return event tickers for open KXNHLGAME events."""
     markets = await _fetch_series_markets(session, KALSHI_NHL_SERIES)
@@ -215,6 +246,8 @@ async def fetch_all_prices(
             series_needed.add(KALSHI_NBA_SERIES)
         elif t.startswith("KXNHLGAME"):
             series_needed.add(KALSHI_NHL_SERIES)
+        elif t.startswith(KALSHI_CFB_SERIES):
+            series_needed.add(KALSHI_CFB_SERIES)
 
     results = await asyncio.gather(*[
         _fetch_series_markets(session, s) for s in series_needed

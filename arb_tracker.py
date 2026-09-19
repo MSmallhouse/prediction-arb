@@ -8,6 +8,8 @@ Primary research output: duration_seconds column measures how long each arb wind
 """
 
 import csv
+
+import csv_writer
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -58,12 +60,25 @@ def _arb_key(opp: ArbOpportunity) -> ArbKey:
 
 
 def _sport(opp: ArbOpportunity) -> str:
+    """
+    Sport label for the CSV. Matched on the Kalshi series prefix.
+
+    NOTE: this used to fall through to "MLB" for anything unrecognised, which
+    silently logged every CFB arb as MLB when college football was added on
+    2026-09-19 — corrupting both the new dataset and the MLB baseline. Keep the
+    prefixes exhaustive; unknown series now label as UNKNOWN so a missing sport
+    is visible in the data instead of being absorbed into MLB.
+    """
     ticker = opp.kalshi_market.event_ticker
+    if ticker.startswith("KXNCAAFGAME"):
+        return "CFB"
     if ticker.startswith("KXNBA"):
         return "NBA"
     if ticker.startswith("KXNHL"):
         return "NHL"
-    return "MLB"
+    if ticker.startswith("KXMLB"):
+        return "MLB"
+    return "UNKNOWN"
 
 
 @dataclass
@@ -148,34 +163,32 @@ def log_arb_duration(tracked: TrackedArb, event: str, filepath: Path = DURATION_
     event: "OPEN" or "CLOSE"
     """
     opp = tracked.opportunity
-    write_header = not filepath.exists()
-    with filepath.open("a", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=_FIELDNAMES)
-        if write_header:
-            writer.writeheader()
-        mins_to_pitch = (opp.poly_market.game_datetime - tracked.first_seen).total_seconds() / 60
-        writer.writerow({
-            "event": event,
-            "game": opp.game_label,
-            "sport": _sport(opp),
-            "gross_spread": f"{opp.gross_spread:.4f}",
-            "net_pretax": f"{opp.net_pretax:.4f}",
-            "first_seen": tracked.first_seen.isoformat(),
-            "closed_at": tracked.last_seen.isoformat() if event == "CLOSE" else "",
-            "duration_seconds": f"{tracked.duration_seconds:.3f}" if event == "CLOSE" else "",
-            "peak_gross": f"{tracked.peak_gross:.4f}" if event == "CLOSE" else "",
-            "opener": tracked.opener,
-            "minutes_to_first_pitch": f"{mins_to_pitch:.1f}",
-            "kalshi_team": opp.kalshi_market.team,
-            "kalshi_side": opp.kalshi_side,
-            "poly_team": opp.poly_market.team,
-            "kalshi_ask": f"{opp.kalshi_ask:.4f}",
-            "kalshi_bid": f"{opp.kalshi_order_market.yes_bid if opp.kalshi_side == 'YES' else opp.kalshi_order_market.no_bid:.4f}",
-            "poly_ask": f"{opp.poly_market.yes_ask:.4f}",
-            "poly_bid": f"{opp.poly_market.yes_bid:.4f}",
-            "kalshi_oi": f"{opp.kalshi_order_market.open_interest:.0f}",
-            "kalshi_vol_24h": f"{opp.kalshi_order_market.volume_24h:.0f}",
-            "game_datetime": opp.game_datetime.isoformat(),
-            "kalshi_depth": f"{opp.kalshi_order_market.yes_ask_size if opp.kalshi_side == 'YES' else opp.kalshi_order_market.no_ask_size:.0f}",
-            "poly_depth": f"{opp.poly_market.yes_ask_size:.0f}",
-        })
+    mins_to_pitch = (opp.poly_market.game_datetime - tracked.first_seen).total_seconds() / 60
+    # Row is built here (on the event loop) so it captures prices as they are
+    # right now; the write itself happens on the csv_writer thread.
+    row = {
+        "event": event,
+        "game": opp.game_label,
+        "sport": _sport(opp),
+        "gross_spread": f"{opp.gross_spread:.4f}",
+        "net_pretax": f"{opp.net_pretax:.4f}",
+        "first_seen": tracked.first_seen.isoformat(),
+        "closed_at": tracked.last_seen.isoformat() if event == "CLOSE" else "",
+        "duration_seconds": f"{tracked.duration_seconds:.3f}" if event == "CLOSE" else "",
+        "peak_gross": f"{tracked.peak_gross:.4f}" if event == "CLOSE" else "",
+        "opener": tracked.opener,
+        "minutes_to_first_pitch": f"{mins_to_pitch:.1f}",
+        "kalshi_team": opp.kalshi_market.team,
+        "kalshi_side": opp.kalshi_side,
+        "poly_team": opp.poly_market.team,
+        "kalshi_ask": f"{opp.kalshi_ask:.4f}",
+        "kalshi_bid": f"{opp.kalshi_order_market.yes_bid if opp.kalshi_side == 'YES' else opp.kalshi_order_market.no_bid:.4f}",
+        "poly_ask": f"{opp.poly_market.yes_ask:.4f}",
+        "poly_bid": f"{opp.poly_market.yes_bid:.4f}",
+        "kalshi_oi": f"{opp.kalshi_order_market.open_interest:.0f}",
+        "kalshi_vol_24h": f"{opp.kalshi_order_market.volume_24h:.0f}",
+        "game_datetime": opp.game_datetime.isoformat(),
+        "kalshi_depth": f"{opp.kalshi_order_market.yes_ask_size if opp.kalshi_side == 'YES' else opp.kalshi_order_market.no_ask_size:.0f}",
+        "poly_depth": f"{opp.poly_market.yes_ask_size:.0f}",
+    }
+    csv_writer.queue_rows(filepath, _FIELDNAMES, [row])

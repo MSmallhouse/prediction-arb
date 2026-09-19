@@ -1,0 +1,19 @@
+# scanner.log grows ~65MB/day. Keep 30 days so a memory-leak investigation
+# spanning several weekly recycles still has its `rss NNNMB` heartbeat samples
+# (older copies are gzipped — read them with zgrep, not grep).
+# copytruncate is safe here: systemd opens the log with append mode, so writes
+# always seek to end and no sparse gap appears after truncation.
+# The "su" directive is REQUIRED: ~/prediction-arb is group-writable (ubuntu:ubuntu),
+# and logrotate refuses to rotate under a non-root-writable parent without it —
+# silently, with the log growing forever. Verify with:
+#   sudo logrotate -d /etc/logrotate.d/arb-scanner
+/home/ubuntu/prediction-arb/scanner.log {
+    su ubuntu ubuntu
+    daily
+    rotate 30
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+}

@@ -1,0 +1,32 @@
+[Unit]
+Description=prediction-arb scanner + Strategy B executor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/prediction-arb
+ExecStart=/usr/bin/python3 -u /home/ubuntu/prediction-arb/main.py
+Restart=always
+RestartSec=15
+# Restart even if it exits 0 (clean shutdown should never happen unattended).
+SuccessExitStatus=0
+
+# Memory guard: the process leaks ~38MB/day. MemoryMax makes systemd kill and
+# restart the cgroup before the kernel OOM killer takes the whole box down.
+# Raised 2026-09-19 when CFB detect-only was added: a Saturday college slate
+# roughly doubles the market count (134 Kalshi -> 280) and cost +237MB RSS in
+# testing. The box has 908MB + 1GB swap; leaving ~200MB for the OS.
+MemoryHigh=600M
+MemoryMax=700M
+OOMPolicy=restart
+
+# Scheduled recycle: restart daily at 10:00 UTC (6am ET, no games in progress)
+# is handled by arb-scanner-restart.timer, not here.
+
+StandardOutput=append:/home/ubuntu/prediction-arb/scanner.log
+StandardError=append:/home/ubuntu/prediction-arb/scanner.log
+
+[Install]
+WantedBy=multi-user.target
