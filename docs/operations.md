@@ -115,9 +115,9 @@ of them, so the checks assert on **meaning**:
 | CSV writer backlog > 100 | Writer thread wedged |
 | Any `executor._stuck_positions` | Failed taker exits left positions open |
 
-⚠️ **Bug:** the "arbs but no attempts" check is `elif`-chained behind the private-WS
-readiness check, so **it can never fire while the private WS is down**. Two failure modes
-share one slot. See [open-questions.md](open-questions.md#doccode-drift-found-2026-09-19).
+All seven checks are independent — the first six were briefly `elif`-chained in pairs,
+which meant "arbs but no attempts" could never fire while the private WS was down. Fixed
+2026-09-19; keep them independent, since one silent failure does not exclude another.
 
 ### Email is the primary channel
 

@@ -236,7 +236,7 @@ doing:
 | `main._gc_was_enabled` assigned, never read | Vestige of the reverted `gc.disable()` experiment |
 | `main._gc_disabled_at` never set non-zero — the "GC left disabled" watchdog **can never fire**, and its comment describes code that no longer exists | Misleading dead watchdog |
 | `csv_writer._dropped` never incremented or read; `flush()` spawns a waiter thread but never enqueues the `None` shutdown sentinel `_worker` checks for | Unfinished |
-| Health check "arbs at 4%+ with zero attempts" is **`elif`-chained** behind the private-WS readiness check — if the private WS is not ready, the arb alert **can never fire** | Real bug: two failure modes share one slot |
+| ~~Health check "arbs at 4%+ with zero attempts" `elif`-chained behind the private-WS check~~ | **FIXED 2026-09-19** — the two checks are now independent |
 | `arb_detector.poly_fee()` docstring and the `config.py` comment both say 0.03 while the constant is 0.05 | Stale comment |
 | Maker-fee formulas (`kalshi_maker`, `poly_maker`) exist in docs only — no constants in code | See [architecture.md § Fee model](architecture.md#fee-model) |
 | Per-sport fee coefficients (the claimed CFB 0.0695) do not exist | See [sports.md](sports.md#cfb-fees) |

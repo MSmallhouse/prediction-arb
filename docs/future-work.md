@@ -114,6 +114,4 @@ See [operations.md § Alerting](operations.md#alerting).
 
 - Make the CFB Polymarket series id dynamic — it is hardcoded `"225"` and will silently
   match zero markets at the 2027 rollover ([sports.md](sports.md)).
-- Fix the `elif`-chained health check so "arbs but no attempts" can fire independently of
-  private-WS readiness ([open-questions.md](open-questions.md#doccode-drift-found-2026-09-19)).
 - Delete the dead modules and dead imports listed in the same section.

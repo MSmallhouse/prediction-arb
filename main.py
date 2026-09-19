@@ -781,11 +781,15 @@ def _health_problems(now: datetime) -> list[str]:
         problems.append("never received a price tick")
 
     # Tonight's outage: executor enabled, arbs flowing, nothing ever fired.
+    # These two are deliberately independent, not chained: a dead private WS is
+    # only ONE of the reasons attempts can be zero, and chaining them meant the
+    # "a filter is blocking everything" signal could never fire while the WS was
+    # down — two silent-failure detectors sharing one slot.
     if executor.config.enabled and uptime_s > NOT_READY_ALERT_S:
         ws = getattr(executor, "_private_ws", None)
         if ws is None or not ws.is_ready:
             problems.append("executor enabled but private WS not ready — cannot trade")
-        elif _arb4_count >= ARB4_WITHOUT_ATTEMPT_ALERT and executor.attempt_count == 0:
+        if _arb4_count >= ARB4_WITHOUT_ATTEMPT_ALERT and executor.attempt_count == 0:
             problems.append(
                 f"{_arb4_count} arbs at 4%+ but zero execution attempts — a filter is blocking everything"
             )

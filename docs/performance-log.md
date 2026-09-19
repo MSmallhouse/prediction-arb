@@ -291,3 +291,32 @@ baseline is 10%).
 Event-loop lag: steady-state windows 32.2ms and 72.0ms max; startup/discovery window
 2245ms. GC: 12-13 collections and 755-898ms max pause in discovery windows, **zero
 collections in steady state**.
+
+---
+
+## Health snapshot — 2026-09-19 23:58 UTC
+
+First undisturbed post-revival window, ~1h uptime, 0 restarts, 0 `HEALTH ALERT` lines.
+
+| Metric | Value |
+|---|---|
+| Markets | `K: 204/204 confirmed`, `P: 186/186 confirmed` (93 games) |
+| RSS | **236 MB**, flat across three consecutive heartbeats |
+| Tasks | 10 |
+| Loop lag (max per 5-min window) | 16.8 / 37.6 / 37.9 ms |
+| GC | **0 collections** in all three windows |
+| CSV queue | 0 |
+
+Two things worth noting against the earlier baselines:
+
+- **236MB at 204 Kalshi markets is BELOW the 275MB baseline taken at 134 markets.** More
+  markets, less memory — consistent with the per-page extraction change and the discovery
+  rewrite, and the first real evidence for the "the leak may already be fixed" hypothesis
+  in [open-questions.md](open-questions.md#memory-leak-source-unidentified-only-mitigated).
+  **Not conclusive** — this is a ~1h window, and the protocol calls for 72h minimum.
+- **Loop lag has improved to 16.8-37.9ms** from the 32-72ms measured earlier the same day,
+  with zero GC collections in every window. Consistent with the finding that steady-state
+  lag is burst WS work rather than GC.
+
+CFB had aged out of the 3h lookahead by this hour (Saturday evening slate finished), so
+this window is MLB/NHL only and is **not** comparable to the CFB RSS figures.
