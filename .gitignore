@@ -1,5 +1,6 @@
-# Secrets
+# Secrets — this repo is PUBLIC. Anything holding key material must be listed.
 .env
+.env.*
 *.pem
 *.key
 
