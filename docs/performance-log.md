@@ -320,3 +320,29 @@ Two things worth noting against the earlier baselines:
 
 CFB had aged out of the 3h lookahead by this hour (Saturday evening slate finished), so
 this window is MLB/NHL only and is **not** comparable to the CFB RSS figures.
+
+## Post-deploy snapshot — 2026-09-20 00:07 UTC
+
+Restarted to deploy the health-check fix. Clean start, 0 errors, 0 `HEALTH ALERT` lines.
+
+| Metric | Value |
+|---|---|
+| Markets | `K: 256/256 confirmed`, `P: 236/236 confirmed` (118 games) |
+| RSS | **216 MB** |
+| Loop lag / GC | 1706.6 ms max · 12 collections, 1429.5 ms max pause |
+
+**The RSS trend is now three points and all of them argue the leak is gone:**
+
+| Markets (Kalshi) | RSS |
+|---|---|
+| 134 (2026-09-19 19:48, the old baseline) | 275 MB |
+| 204 (2026-09-19 23:58) | 236 MB |
+| **256 (2026-09-20 00:07)** | **216 MB** |
+
+RSS is falling as market count rises — the opposite of the documented relationship. Still
+not conclusive (all three are short windows, and the last two are post-restart), but it
+raises the priority of actually running the 72h protocol in
+[open-questions.md](open-questions.md#memory-leak-source-unidentified-only-mitigated).
+
+The 1706ms lag and 12 GC collections are the **expected** startup/discovery signature, not
+a regression — steady-state windows the same night showed 16.8-37.9ms and zero collections.

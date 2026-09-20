@@ -80,6 +80,45 @@ trading, with its heap on disk. Restart the service to recover.
 
 ---
 
+## Deploying code
+
+⚠️ **The VPS is deployed by `scp`, NOT by `git pull`.** Its checkout sits at an old commit
+(872f350 as of 2026-09-20, five behind `main`) with a **dirty working tree** — every
+tracked module shows as modified because files were copied over the top. `git pull` there
+would conflict or clobber the running code.
+
+Deploy a single file:
+
+```bash
+# 1. Prove the VPS copy matches what you edited FROM, or you will clobber VPS-only changes
+ssh -i ~/.ssh/arb-key.pem ubuntu@98.82.172.44 'md5sum ~/prediction-arb/main.py'
+git show <commit-you-edited-from>:main.py | md5 -q        # must match
+
+# 2. Check nothing is mid-trade — a restart abandons an open position
+ssh -i ~/.ssh/arb-key.pem ubuntu@98.82.172.44 \
+  'cd ~/prediction-arb && echo BUYS $(grep -c ",BUY," executions.csv) SELLS $(grep -cE ",SELL_" executions.csv)'
+# BUYS == SELLS means nothing is open
+
+# 3. Copy, syntax-check on the box, restart
+scp -i ~/.ssh/arb-key.pem main.py ubuntu@98.82.172.44:~/prediction-arb/main.py
+ssh -i ~/.ssh/arb-key.pem ubuntu@98.82.172.44 \
+  'cd ~/prediction-arb && python3 -c "import ast;ast.parse(open(\"main.py\").read())" \
+   && sudo systemctl restart arb-scanner'
+```
+
+**Verify after ~6 minutes**, not immediately — the first heartbeat is 300s out and
+discovery needs to complete. A healthy post-restart heartbeat shows `K: n/n confirmed` and
+`P: n/n confirmed` with both counts non-zero.
+
+Expect the **first** post-restart heartbeat to show a large `loop lag max` and 12-13 GC
+collections. That is the known startup/discovery signature, not a regression
+([findings-rejected.md](findings-rejected.md#gc-tuning--three-attempts-none-fixed-the-pauses)).
+
+Fixing the git divergence properly is worth doing, but do it deliberately, not as a side
+effect of a deploy.
+
+---
+
 ## Health check, in order
 
 ```bash
