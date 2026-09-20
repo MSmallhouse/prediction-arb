@@ -74,11 +74,15 @@ whether the velocity filter generalises. See
 ## Quick reference
 
 ```bash
-ssh -i ~/.ssh/arb-key.pem ubuntu@98.82.172.44     # IP-locked SG; timeout ≠ dead box
-sudo systemctl status arb-scanner
-grep "Stores:" ~/prediction-arb/scanner.log | tail -3
-python3 reconcile.py executions.csv
+./deploy/ops.sh status      # live health: service, commit, heartbeat, alerts, stuck positions
+./deploy/ops.sh deploy      # the ONLY deploy path: push → pull → syntax check → restart → verify
+./deploy/ops.sh restart     # refuses if a position is open; --force to override
+./deploy/ops.sh reconcile
 ```
+
+Never `scp` code or restart by hand — `ops.sh` encodes the safety checks, and scp
+desynchronizes the box's git state. Nothing deploys automatically; pushing does nothing
+until `ops.sh deploy` runs. SSH is IP-locked, so a timeout ≠ a dead box.
 
 Analyse `vps_pull_20260919/`, not the stale repo-root CSVs. Read CLOSE rows only; quote
 medians, never means. → [docs/performance-log.md](docs/performance-log.md#how-to-read-the-data-files-without-getting-it-wrong)

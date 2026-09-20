@@ -47,7 +47,7 @@ process after an OOM kill, which is why one OOM became a four-month outage
 ([incidents.md](incidents.md#2026-05-15--2026-09-19-the-four-month-outage)).
 
 ```bash
-sudo systemctl status  arb-scanner
+sudo systemctl status  arb-scanner   # or: ./deploy/ops.sh status
 sudo systemctl restart arb-scanner
 sudo systemctl stop    arb-scanner
 ```
@@ -80,42 +80,56 @@ trading, with its heap on disk. Restart the service to recover.
 
 ---
 
-## Deploying code
+## Operating the box — use `deploy/ops.sh`
 
-⚠️ **The VPS is deployed by `scp`, NOT by `git pull`.** Its checkout sits at an old commit
-(872f350 as of 2026-09-20, five behind `main`) with a **dirty working tree** — every
-tracked module shows as modified because files were copied over the top. `git pull` there
-would conflict or clobber the running code.
-
-Deploy a single file:
+All routine operations go through one script, so the safety checks are executed rather
+than remembered. Run it from the repo root.
 
 ```bash
-# 1. Prove the VPS copy matches what you edited FROM, or you will clobber VPS-only changes
-ssh -i ~/.ssh/arb-key.pem ubuntu@98.82.172.44 'md5sum ~/prediction-arb/main.py'
-git show <commit-you-edited-from>:main.py | md5 -q        # must match
-
-# 2. Check nothing is mid-trade — a restart abandons an open position
-ssh -i ~/.ssh/arb-key.pem ubuntu@98.82.172.44 \
-  'cd ~/prediction-arb && echo BUYS $(grep -c ",BUY," executions.csv) SELLS $(grep -cE ",SELL_" executions.csv)'
-# BUYS == SELLS means nothing is open
-
-# 3. Copy, syntax-check on the box, restart
-scp -i ~/.ssh/arb-key.pem main.py ubuntu@98.82.172.44:~/prediction-arb/main.py
-ssh -i ~/.ssh/arb-key.pem ubuntu@98.82.172.44 \
-  'cd ~/prediction-arb && python3 -c "import ast;ast.parse(open(\"main.py\").read())" \
-   && sudo systemctl restart arb-scanner'
+./deploy/ops.sh status       # what is running, and is it actually working
+./deploy/ops.sh deploy       # push -> pull on box -> syntax check -> restart -> verify
+./deploy/ops.sh restart      # safe restart (refuses if a position is open)
+./deploy/ops.sh stop | start
+./deploy/ops.sh logs [n]
+./deploy/ops.sh reconcile    # runs reconcile.py on the box
 ```
 
-**Verify after ~6 minutes**, not immediately — the first heartbeat is 300s out and
-discovery needs to complete. A healthy post-restart heartbeat shows `K: n/n confirmed` and
-`P: n/n confirmed` with both counts non-zero.
+Add `--force` to override the open-position guard on `restart`/`deploy`/`stop`.
+
+**What it enforces, and why each check exists:**
+
+| Check | Why |
+|---|---|
+| Local tree clean + pushed before deploy | What runs on the box should be a named commit, not a working copy |
+| `BUYS == SELLS` in `executions.csv` | A restart abandons an open position. This is the guard the 2026-05-14 incident argues for |
+| Every module parses on the box before restart | A syntax error means the service restart-loops at `RestartSec=15`, and the CloudWatch alarm may never fire — see [Alerting](#alerting) |
+| Waits for a real post-restart heartbeat | `active` is not health. It asserts a `live` heartbeat actually appeared |
+| Warns if tracked `.py` differ from the commit | Detects the scp-drift failure below automatically |
+| Reports HEALTH ALERT and stuck-position counts | Both are silent otherwise |
+
+**Deploy is `git pull`, not `scp`** (since 2026-09-20). Both work, but scp silently
+desynchronizes the box's git state: it ran for months at commit `872f350` with a dirty tree
+while the code was five commits newer, so `git log` on the box was a lie and the only way to
+know what was running was hashing every file. With `git pull`, `git log -1` is a true
+answer. Use scp only for an emergency uncommitted hotfix, and commit it immediately after.
+
+⚠️ **`git pull` alone is NOT a deploy.** Python loads code into memory at start, so pulling
+without restarting leaves the box *looking* updated (new commit in `git log`) while still
+executing the old code, with no error anywhere. `ops.sh deploy` always restarts.
+
+⚠️ **Nothing deploys automatically.** There is no webhook, cron, or git hook on the box —
+verified 2026-09-20. Pushing to GitHub does nothing until someone runs `ops.sh deploy`.
+`arb-scanner-restart.timer` restarts whatever is already on disk; it does not fetch.
 
 Expect the **first** post-restart heartbeat to show a large `loop lag max` and 12-13 GC
 collections. That is the known startup/discovery signature, not a regression
 ([findings-rejected.md](findings-rejected.md#gc-tuning--three-attempts-none-fixed-the-pauses)).
 
-Fixing the git divergence properly is worth doing, but do it deliberately, not as a side
-effect of a deploy.
+Backups from the 2026-09-20 reconciliation are on the box at
+`~/vps-pre-reconcile-20260920/` (pre-reset code) and `~/vps-stray-quarantine-20260920/`
+(dead May-era copies: `scrapers/main.py`, `scrapers/executor.py`, a root-level
+`polymarket_us_private_ws.py`, two dry-run CSVs). Delete once you are satisfied nothing
+regressed.
 
 ---
 
