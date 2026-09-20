@@ -265,3 +265,27 @@ window is in progress and the change can wait, let it run. Batch small changes i
 deploy rather than several.
 
 The measurement window in progress as of 2026-09-20 00:24 UTC is the first real one.
+
+---
+
+## Health check counted detect-only sports — FIXED 2026-09-20
+
+Recorded because it is a good example of one fix exposing the next.
+
+Un-chaining the `elif` (earlier the same night) let the "N arbs at 4%+ but zero execution
+attempts" check fire for the first time. It immediately produced a **false positive** at
+00:44:55 UTC: 34 arbs at 4%+ since restart, of which **20 were CFB** — a detect-only sport
+that can never produce an execution attempt by design.
+
+So the check was mis-specified: it counted every 4%+ arb, then complained that none of them
+executed. **Adding any detect-only sport guaranteed the alert would fire on a healthy
+night.** Nobody had seen it because the `elif` had been masking the check entirely.
+
+Fixed by counting only arbs whose sport is *not* in `executor.config.excluded_sports`,
+using `arb_tracker._sport()` so the health check and the CSV can never disagree about what
+sport an arb is.
+
+**The general lesson:** an alert that counts a population larger than the one the guarded
+behaviour applies to will cry wolf, and a crying-wolf alert on a system with this outage
+history is worse than no alert — it trains the operator to ignore the channel that matters.
+When adding a health check, make the denominator match exactly what the check asserts.

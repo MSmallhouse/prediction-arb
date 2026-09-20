@@ -34,7 +34,7 @@ from scrapers.polymarket_us_ws import PolymarketUSWSClient
 from scrapers.polymarket_us_private_ws import PolymarketUSPrivateWSClient
 from scrapers.kalshi_ws import KalshiWSClient
 from arb_detector import evaluate_event, find_arbs
-from arb_tracker import ArbTracker, log_arb_duration
+from arb_tracker import ArbTracker, log_arb_duration, _sport as _arb_sport
 import convergence_tracker
 import csv_writer
 import executor
@@ -176,8 +176,16 @@ async def _check_arbs(changed_events: Optional[list[str]] = None) -> None:
 
     ts = now.strftime("%H:%M:%S.") + f"{now.microsecond // 1000:03d}"
 
+    # Count only arbs the executor could ACT on. Detect-only sports (CFB) can
+    # never produce an attempt, so counting them makes the "zero execution
+    # attempts" health check fire on a perfectly healthy quiet night — it tripped
+    # 2026-09-20 00:44 UTC on 20 CFB arbs out of 34. Adding any detect-only sport
+    # would otherwise guarantee a false alert.
     global _arb4_count  # noqa: PLW0603
-    _arb4_count += len(new_4)
+    _arb4_count += sum(
+        1 for t in new_4
+        if _sport_of(t) not in executor.config.excluded_sports
+    )
 
     for t in new_4:
         opp = t.opportunity
@@ -756,7 +764,16 @@ NOT_READY_ALERT_S = 600.0
 ARB4_WITHOUT_ATTEMPT_ALERT = 25
 CSV_BACKLOG_ALERT = 100
 
-_arb4_count = 0            # 4%+ arbs opened since start
+_arb4_count = 0            # 4%+ arbs opened since start, EXECUTABLE sports only
+
+
+def _sport_of(t) -> str:
+    """Sport label for a tracked arb, using arb_tracker's own classification so
+    the health check and the CSV can never disagree about what sport an arb is."""
+    try:
+        return _arb_sport(t.opportunity)
+    except Exception:
+        return "UNKNOWN"
 _process_start = datetime.now(timezone.utc)
 
 
