@@ -289,7 +289,28 @@ window has run (`./deploy/ops.sh status` shows `ActiveEnterTimestamp`). If a mea
 window is in progress and the change can wait, let it run. Batch small changes into one
 deploy rather than several.
 
-The measurement window in progress as of 2026-09-20 00:24 UTC is the first real one.
+The measurement window opened 2026-09-20 00:24 UTC was the first real one. It ended
+itself after **19h 3min**: the kernel OOM-killed the process at 2026-09-20 20:50:34 UTC
+and systemd restarted it at 20:50:49. Not a deploy — see
+[incidents.md](incidents.md#2026-09-20-2050-utc-oom-kill-that-memguard-could-not-see).
+The current window therefore starts **2026-09-20 20:50:49 UTC**.
+
+⚠️ **That run also invalidated the instrument.** RSS was flat at 367–370MB for the hour
+before the kill while real anon memory grew to ~1.6GB — the difference went to swap,
+which `VmRSS` does not count. So a flat RSS curve does **not** mean flat memory, and the
+"flat across a full 24h window → close this item" row in the table above cannot be acted
+on until the heartbeat logs `VmSwap` alongside RSS
+([future-work.md § 7c](future-work.md#7c-memguard-and-the-heartbeat-are-blind-to-swap)).
+Until then, read `/proc/<pid>/status` directly:
+
+```bash
+pid=$(systemctl show arb-scanner -p MainPID --value); grep -E 'VmRSS|VmSwap' /proc/$pid/status
+systemctl show arb-scanner -p MemoryCurrent -p MemorySwapCurrent -p MemoryPeak
+```
+
+**One thing the 19h run does tell us:** the leak is not dead. Baseline RSS climbed from
+~137MB at start to 367–428MB across the day at a comparable market count (122–130 Kalshi),
+and that is before counting whatever went to swap. Do not close this item.
 
 ---
 

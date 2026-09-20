@@ -171,6 +171,47 @@ on games in play.
 It trains the operator to ignore the channel that exists to catch
 [the silent-failure pattern](incidents.md#the-silent-failure-pattern).
 
+### 7c. memguard and the heartbeat are blind to swap
+
+Established by the OOM kill on
+[2026-09-20 20:50 UTC](incidents.md#2026-09-20-2050-utc-oom-kill-that-memguard-could-not-see):
+the process died at roughly 1.6GB of anon memory (590M RSS peak + 1009M swap peak) while
+memguard logged `RSS 367MB < 500MB — no action` fifty minutes earlier and the last
+heartbeat read `rss 368MB`.
+
+**Why the threshold cannot work as written.** `arb-scanner-memguard.sh` reads
+`ps -o rss=` and `main._rss_mb()` reads `/proc/self/status VmRSS`. Both count only
+resident pages. `MemoryHigh=600M` makes the kernel reclaim *before* the 500MB guard
+threshold is plausibly reached, and `MemorySwapMax=infinity` lets the evicted pages go to
+a 1GB swapfile. RSS therefore flattens out exactly when memory is growing fastest.
+Raising the threshold does not fix this — the guard is measuring the wrong quantity.
+
+**Three changes, in order of value:**
+
+1. **Measure RSS + swap.** In memguard, `awk` `VmRSS` and `VmSwap` out of
+   `/proc/$pid/status` and threshold on the sum; in `_rss_mb()`, log swap as a second
+   field so the heartbeat curve stops lying. Every RSS baseline in these docs is a lower
+   bound until this lands.
+2. **Set `MemorySwapMax`** to something small (say 128M) in `arb-scanner.service`. Swap is
+   what converts a bounded cgroup kill into a 1.6GB death spiral, and it buys nothing for
+   a latency-sensitive process — swapped-in pages on the hot path are worse than a
+   restart.
+3. **React faster than hourly.** The kill went from "healthy" to dead inside one discovery
+   cycle. An hourly timer with a two-consecutive-breach rule needs two hours to act and
+   cannot see a 50-minute spike at all. Either run the check every 5 minutes (keeping the
+   two-breach rule, which then costs 10 minutes) or move the guard in-process onto the
+   existing heartbeat, which already samples every 5 minutes.
+
+**Related, and possibly the actual cure:** the burst is discovery parsing markets it
+immediately discards — `KXNCAAFGAME: parsed 468 markets from 234 events` to use zero of
+them. That is item 5 of [§ 6](#6-cheap-latency-and-capacity-wins), which should be
+re-read as a memory fix rather than a latency one.
+
+**Also missing: nothing alerts on a restart.** `Restart=always` recovered in 15s, inside
+the NetworkIn alarm's 15-minute window, and no health check asserts on `NRestarts`. The
+kill was found by reading the RSS curve by hand. Add `NRestarts > 0 since last check` to
+`_health_problems()`, or have `ops.sh status` diff it against a stored value.
+
 ---
 
 ## 8. Housekeeping worth doing on the next pass

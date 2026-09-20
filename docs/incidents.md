@@ -183,6 +183,63 @@ MLB baseline for that window. Fixed (CFB added; unknown series now label `UNKNOW
 
 ---
 
+## 2026-09-20 20:50 UTC: OOM kill that memguard could not see
+
+First restart of the new measurement window, 19h 3min into an uninterrupted run.
+`NRestarts=1`, service back up at 20:50:49 UTC, auto-recovered in 15s.
+
+```
+arb-scanner.service: The kernel OOM killer killed some processes in this unit.
+Main process exited, code=killed, status=9/KILL
+Consumed 45min 47.741s CPU over 19h 3min 19.619s wall clock,
+  590.2M memory peak, 1009.7M memory swap peak
+```
+
+**Why memguard did not prevent it.** It checked at 20:00:43 and logged
+`RSS 367MB < 500MB — no action`. The heartbeat 3 minutes before the kill still read
+`rss 368MB`. Both were true and both were useless:
+
+- `ps -o rss=` and `/proc/self/status VmRSS` count only **resident** anon pages. Pages the
+  kernel pushes to swap leave RSS and become invisible to every number we log.
+- `MemorySwapMax=infinity` against a 1GB swapfile means the cgroup can grow to roughly
+  `MemoryMax` (700M) **plus** the whole swapfile before anything kills it. Peak swap was
+  1009.7M — the swapfile was full.
+- So the process died at ~1.6GB of real anon memory with RSS pinned under 400MB. A
+  500MB RSS threshold cannot fire in that regime **at all**. Raising it would not help;
+  it is measuring the wrong quantity.
+
+**What actually blew up.** The kill landed at 20:50:34, inside the hourly discovery cycle
+(prior cycles ran 18:50:15, 19:50:26, and the restarted process ran its own at 20:50:53).
+RSS was flat at 368–370MB for the preceding hour — flat because reclaim was capping it,
+not because nothing was allocating. Sunday evening is the largest slate of the week and
+discovery parses everything before filtering: `KXNCAAFGAME: parsed 468 markets from 234
+events` to then use **zero** of them. Elevated daytime baseline (367–428MB, see the
+memguard log) plus that transient is enough to cross 700M, start swapping, and exhaust
+the swapfile.
+
+**Consequences.** SIGKILL does not drain the CSV writer queue, so any queued rows were
+lost — `csvq 0` at 20:47 suggests few or none. No position was open. Trading resumed
+normally (`buying power 108.27` on reconnect). The memory-leak measurement window is
+truncated at 19h and restarted 20:50:49 UTC.
+
+**What this changes:**
+
+1. Every RSS number in the docs is a **lower bound** on memory once swapping starts, and
+   `MemoryHigh=600M` guarantees swapping starts before the guard's threshold is reached.
+   Read RSS together with `VmSwap` from `/proc/<pid>/status`, or with the cgroup's
+   `MemoryCurrent` + `MemorySwapCurrent`, or not at all.
+2. memguard needs RSS + swap, and an hourly cadence with a two-consecutive-breach rule
+   cannot react to a spike that kills in under 50 minutes. See
+   [future-work.md § 7c](future-work.md#7c-memguard-and-the-heartbeat-are-blind-to-swap).
+3. Discarding CFB/prop markets during the JSON parse
+   ([future-work.md § 6](future-work.md#6-cheap-latency-and-capacity-wins), item 5)
+   moves from a latency nicety to the direct fix for the allocation burst that kills us.
+4. Nothing alerted on the kill itself. `Restart=always` brought it back before the
+   NetworkIn alarm's 15-minute window, and no health check asserts on
+   `NRestarts`. It was found by reading the RSS curve by hand.
+
+---
+
 ## The silent-failure pattern
 
 Six distinct failures, three of them found on a single day. Every one of them:

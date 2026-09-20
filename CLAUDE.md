@@ -56,13 +56,19 @@ the full filter stack). **Fill rate is the bottleneck** — 52.6% of 4%+ arbs cl
   (withdrawals). Never grant it. The repo is PUBLIC; `.env` and `.env.*` are gitignored.
 - **`quantity` cannot rise above 1** until the maker-sell/taker-exit scaling bug is fixed.
   → [docs/open-questions.md](docs/open-questions.md#known-unfixed-bug-quantity-scaling)
+- **`rss` in the heartbeat is a lower bound, not memory.** `VmRSS` excludes swapped-out
+  pages, and `MemoryHigh=600M` guarantees swapping starts before memguard's 500MB
+  threshold. A flat RSS curve can mean memory is growing into swap — it OOM-killed us at
+  ~1.6GB with RSS reading 368MB. Read `VmSwap` too.
+  → [docs/incidents.md](docs/incidents.md#2026-09-20-2050-utc-oom-kill-that-memguard-could-not-see)
 - **CFB is detect-only** (`excluded_sports = {"CFB"}`) — thresholds were fitted on baseball
   and hockey.
 
 ## Current state (2026-09-20)
 
 Live on AWS EC2 t3.micro under systemd, trading MLB + NHL, detecting CFB. Revived
-2026-09-19 after a 127-day outage caused by four independent silent breakages. Net P&L over
+2026-09-19 after a 127-day outage caused by four independent silent breakages. OOM-killed
+and auto-restarted 2026-09-20 20:50 UTC, 19h into the leak measurement window. Net P&L over
 the last measured window (2026-05-12→15, n=33 closed trades) is **−$0.97**, dominated by
 six gap losses; converged exits are 8/8 profitable. Exits logged before 2026-05-14 were
 not fill-verified, so that figure is an upper bound.
