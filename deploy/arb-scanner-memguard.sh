@@ -35,9 +35,28 @@ kb=$(ps -o rss= -p "$pid" 2>/dev/null | tr -d ' ')
 [ -n "$kb" ] || exit 0
 mb=$(( kb / 1024 ))
 
+# Require TWO consecutive breaches before restarting. Discovery transiently
+# spikes RSS — measured 394MB mid-discovery against a 219MB steady state on
+# 2026-09-20, and 512MB with CFB at a 6h lookahead. Discovery is hourly and this
+# check is hourly, so a single-sample trigger could phase-lock with the spike and
+# restart the scanner every hour forever. Two consecutive hourly samples above
+# the line means sustained growth, not a spike.
+STATE=/var/lib/arb-scanner-memguard.count
+[ -f "$STATE" ] || echo 0 > "$STATE"
+count=$(cat "$STATE" 2>/dev/null || echo 0)
+
 if [ "$mb" -ge "$THRESHOLD_MB" ]; then
-  echo "$(date -u +%FT%TZ) memguard: RSS ${mb}MB >= ${THRESHOLD_MB}MB — graceful restart" >>"$LOG"
-  systemctl restart "$UNIT"
+  count=$(( count + 1 ))
+  echo "$count" > "$STATE"
+  if [ "$count" -ge 2 ]; then
+    echo "$(date -u +%FT%TZ) memguard: RSS ${mb}MB >= ${THRESHOLD_MB}MB for ${count} consecutive checks — graceful restart" >>"$LOG"
+    echo 0 > "$STATE"
+    systemctl restart "$UNIT"
+  else
+    echo "$(date -u +%FT%TZ) memguard: RSS ${mb}MB >= ${THRESHOLD_MB}MB (${count}/2) — likely a discovery spike, waiting" >>"$LOG"
+  fi
 else
+  [ "$count" != "0" ] && echo "$(date -u +%FT%TZ) memguard: RSS ${mb}MB back under ${THRESHOLD_MB}MB — counter reset" >>"$LOG"
+  echo 0 > "$STATE"
   echo "$(date -u +%FT%TZ) memguard: RSS ${mb}MB < ${THRESHOLD_MB}MB — no action" >>"$LOG"
 fi
