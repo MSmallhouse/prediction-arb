@@ -1,8 +1,24 @@
 [Unit]
-Description=Recycle arb-scanner daily at 10:00 UTC
+Description=Recycle arb-scanner every ~5 days to cap the memory leak
 
 [Timer]
-OnCalendar=*-*-* 10:00:00 UTC
+# Every ~5 days at 10:00 UTC (6am ET, no games in progress), NOT daily.
+#
+# Daily recycling capped every memory-leak measurement window at <24h and reset
+# RSS each time, so the leak question could never actually be answered — we only
+# ever collected fragments. A ~5-day cadence means the log always contains at
+# least one COMPLETE 5-day RSS curve, and the box still recycles on its own if
+# nobody looks at it for weeks.
+#
+# Fixed days-of-month rather than OnUnitActiveSec=5d so the next recycle is
+# always predictable and Persistent=true can catch up after downtime. Gaps run
+# 3-6 days (February is short); all are safe.
+#
+# Safety at the historical 38MB/day leak, from a ~215MB baseline:
+#   5 days -> ~405MB, 6 days -> ~443MB   (MemoryHigh=600M, MemoryMax=700M)
+# Headroom to MemoryHigh is ~10 days, so a missed recycle is not an incident.
+# systemd kills and restarts at MemoryMax regardless, which is the real backstop.
+OnCalendar=*-*-01,06,11,16,21,26 10:00:00 UTC
 Persistent=true
 
 [Install]

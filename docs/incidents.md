@@ -27,7 +27,7 @@ the leak. Root cause still unidentified — see
 [open-questions.md § Memory leak](open-questions.md#memory-leak-source-unidentified-only-mitigated).
 
 **Fixed by mitigation, not cure:** 1GB swapfile, systemd unit with `Restart=always`,
-`MemoryHigh=600M` / `MemoryMax=700M`, `OOMPolicy=restart`, plus a daily 10:00 UTC recycle
+`MemoryHigh=600M` / `MemoryMax=700M`, `OOMPolicy=restart`, plus a scheduled recycle
 timer. The heartbeat now logs `rss NNNMB tasks N` so the leak is measurable at all.
 
 **Why it went unnoticed for four months:** the AWS bill kept arriving (~$1/mo), the

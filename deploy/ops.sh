@@ -12,7 +12,8 @@
 #   ./deploy/ops.sh reconcile   run reconcile.py on the box
 #   ./deploy/ops.sh pull        copy CSVs + scanner.log down for analysis
 #   ./deploy/ops.sh heartbeats  full RSS/lag history (reads rotated logs correctly)
-#   ./deploy/ops.sh timer [on|off]   daily 10:00 UTC recycle (off = long leak window)
+#   ./deploy/ops.sh timer [on|off]   ~5-day recycle (off = unbounded, watch memory)
+#   ./deploy/ops.sh units       install systemd unit + timer + logrotate from deploy/
 #
 # Add --force to restart/deploy to override the open-position guard.
 
@@ -173,5 +174,21 @@ NOTE: the daily 10:00 UTC timer will NOT restart a stopped service - start it yo
                *)   "${SSH[@]}" "systemctl list-timers arb-scanner-restart.timer --all --no-pager | head -3" ;;
              esac ;;
 
-  *)         sed -n '2,22p' "$0"; exit 1 ;;
+  # Installs unit files from deploy/ and reloads. Does NOT restart the scanner —
+  # a timer change must not interrupt a running measurement window.
+  units)     preflight
+             say "copying unit files"
+             scp -i "$KEY" deploy/arb-scanner.service deploy/arb-scanner-restart.service \
+                 deploy/arb-scanner-restart.timer deploy/logrotate-arb "$HOST:/tmp/"
+             "${SSH[@]}" "sudo cp /tmp/arb-scanner.service /tmp/arb-scanner-restart.service /tmp/arb-scanner-restart.timer /etc/systemd/system/ \
+               && sudo cp /tmp/logrotate-arb /etc/logrotate.d/arb-scanner \
+               && sudo chown root:root /etc/logrotate.d/arb-scanner \
+               && sudo systemctl daemon-reload \
+               && sudo systemctl reenable arb-scanner-restart.timer 2>&1 | tail -1 \
+               && sudo systemctl restart arb-scanner-restart.timer \
+               && echo 'units installed (scanner NOT restarted)'"
+             say "timer schedule now"
+             "${SSH[@]}" "systemctl list-timers arb-scanner-restart.timer --all --no-pager | head -3" ;;
+
+  *)         sed -n '2,23p' "$0"; exit 1 ;;
 esac

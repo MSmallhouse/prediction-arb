@@ -81,9 +81,14 @@ sudo systemctl stop    arb-scanner
   skips the most recent full day. Use both `zgrep` and `grep`.
   The logrotate config needs `su ubuntu ubuntu` or it **silently skips** the group-writable
   directory.
-- `arb-scanner-restart.timer` recycles the service daily at **10:00 UTC** to cap the memory
-  leak. Logrotate runs ~00:49 UTC. Pause it for a long leak-measurement window with
-  `./deploy/ops.sh timer off`, and **re-enable with `timer on`**.
+- `arb-scanner-restart.timer` recycles the service **every ~5 days** at 10:00 UTC (on the
+  1st, 6th, 11th, 16th, 21st and 26th) to cap the memory leak. Changed from daily on
+  2026-09-20: daily recycling reset the RSS baseline before any leak window could complete,
+  so the question was unanswerable. At the historical 38MB/day this lands at ~405-443MB
+  against `MemoryHigh=600M`, with ~10 days of headroom — a missed recycle is not an
+  incident, and `MemoryMax` + `OOMPolicy=restart` is the real backstop. Logrotate runs
+  ~00:49 UTC. Install changes with `./deploy/ops.sh units` (does not restart the scanner);
+  inspect or pause with `./deploy/ops.sh timer [show|off|on]`.
 - Memory caps: `MemoryHigh=600M`, `MemoryMax=700M`, `OOMPolicy=restart`, `Restart=always`.
   Raised from 550/650 to fit CFB.
 - 1GB swapfile at `/swapfile`, in `/etc/fstab`.

@@ -171,7 +171,7 @@ position was still open at write time** — close it manually or via `reconcile.
   prices at the instant they were true; only the I/O is handed to the daemon thread.
 - **SIGTERM must drain the writer queue.** `systemctl restart` sends SIGTERM, which does
   **not** raise `KeyboardInterrupt`. Without `_install_sigterm_handler()` every restart,
-  including the daily 10:00 UTC recycle, silently discards queued rows.
+  including the scheduled ~5-day recycle, silently discards queued rows.
 - **`_in_flight` is global and must stay that way** — it is the only thing coordinating risk
   against a single ~$70 Polymarket balance.
 - **The Kalshi velocity check runs before `_in_flight.add`**, so a filtered ticker stays

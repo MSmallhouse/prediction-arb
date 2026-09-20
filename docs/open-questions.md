@@ -50,16 +50,21 @@ grep "Stores:" ~/prediction-arb/scanner.log
 | Sawtooth that recovers | GC churn, not a leak |
 | Flat across a full 24h window | Leak died with the discovery rewrite — **close this item** |
 
-**Caveats when reading:** (a) `arb-scanner-restart.timer` recycles at 10:00 UTC daily, so
-every window is ≤24h and RSS resets there — do not read a restart drop as a fix;
+**Caveats when reading:** (a) `arb-scanner-restart.timer` recycles every ~5 days at 10:00
+UTC (1st, 6th, 11th, 16th, 21st, 26th), so each window is a complete ~5-day curve and RSS
+resets at the boundary — do not read a recycle drop as a fix;
 (b) logrotate runs ~00:49 UTC, so a rotated file spans a recycle boundary mid-file;
 (c) market count drives baseline RSS, so compare windows with similar `Stores:` counts, not
 raw peaks (MLB slate size swings, and NHL/NBA regular seasons start in October).
 
-**Wait at least 72h / 3 recycle windows** before drawing conclusions; 7 days for a rate you
-would act on. For an uninterrupted longer curve,
-`./deploy/ops.sh timer off` — at 38MB/day the 700M cap gives ~10 days of headroom and
-systemd restarts on breach anyway. **Re-enable with `./deploy/ops.sh timer on`.**
+**Wait for at least one complete recycle window** (~5 days) before drawing conclusions; two
+windows for a rate you would act on. Since 2026-09-20 the recycle cadence is ~5 days
+precisely so a single window is long enough to read — this no longer requires disabling
+anything. For an even longer curve, `./deploy/ops.sh timer off`, but then memory is
+unbounded until `MemoryMax` fires, so **re-enable with `./deploy/ops.sh timer on`.**
+
+**First complete 5-day window: 2026-09-21 10:00 UTC → 2026-09-26 10:00 UTC.** The window
+open right now is short (the 21st was the next scheduled date), so read the one after it.
 
 **Next step only if growth is real:** hourly `gc` object-count histogram by type (cheap,
 sampled) to name the culprit. `tracemalloc` top-10 by traceback **only** if the histogram

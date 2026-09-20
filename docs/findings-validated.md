@@ -71,7 +71,7 @@ they capture prices at the instant they were true) and only the I/O is handed of
 
 ⚠️ **SIGTERM must drain the queue.** Rows now live briefly in a daemon-thread queue, and
 `systemctl restart` sends SIGTERM, which does **not** raise `KeyboardInterrupt`. Without
-`_install_sigterm_handler()` every restart — including the daily 10:00 UTC recycle —
+`_install_sigterm_handler()` every restart — including the scheduled ~5-day recycle —
 silently discards queued rows.
 
 ---
