@@ -1,0 +1,6 @@
+[Unit]
+Description=Restart arb-scanner only if its memory exceeds the threshold
+
+[Service]
+Type=oneshot
+ExecStart=/home/ubuntu/prediction-arb/deploy/arb-scanner-memguard.sh

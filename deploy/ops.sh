@@ -12,8 +12,8 @@
 #   ./deploy/ops.sh reconcile   run reconcile.py on the box
 #   ./deploy/ops.sh pull        copy CSVs + scanner.log down for analysis
 #   ./deploy/ops.sh heartbeats  full RSS/lag history (reads rotated logs correctly)
-#   ./deploy/ops.sh timer [on|off]   ~5-day recycle (off = unbounded, watch memory)
-#   ./deploy/ops.sh units       install systemd unit + timer + logrotate from deploy/
+#   ./deploy/ops.sh memguard [on|off]  hourly memory-triggered graceful restart
+#   ./deploy/ops.sh units       install systemd units + timers + logrotate from deploy/
 #
 # Add --force to restart/deploy to override the open-position guard.
 
@@ -162,33 +162,32 @@ NOTE: the daily 10:00 UTC timer will NOT restart a stopped service - start it yo
              echo "  them points at the WS tick path; flat across 24h closes the leak)."
              echo "  NOTE: the 10:00 UTC recycle timer resets RSS daily — a drop there"
              echo "  is the restart, not a fix. Needs 72h/3 windows to mean anything." ;;
-  # The daily recycle caps the memory leak but also resets every measurement
-  # window. Turn it off for an uninterrupted leak curve, then TURN IT BACK ON.
-  timer)     preflight
+  # Restart-on-need, not on schedule. A periodic recycle reset the RSS baseline
+  # whether or not memory was a problem, so the leak curve was always fragments.
+  memguard)  preflight
              case "${2:-show}" in
-               off) "${SSH[@]}" "sudo systemctl stop arb-scanner-restart.timer && sudo systemctl disable arb-scanner-restart.timer 2>&1 | tail -1"
-                    echo "recycle timer OFF. At ~38MB/day the 700M cap gives ~10 days of"
-                    echo "headroom and systemd restarts on breach anyway. RE-ENABLE IT:"
-                    echo "  ./deploy/ops.sh timer on" ;;
-               on)  "${SSH[@]}" "sudo systemctl enable --now arb-scanner-restart.timer 2>&1 | tail -1"; echo "recycle timer ON" ;;
-               *)   "${SSH[@]}" "systemctl list-timers arb-scanner-restart.timer --all --no-pager | head -3" ;;
+               off) "${SSH[@]}" "sudo systemctl disable --now arb-scanner-memguard.timer 2>&1 | tail -1"
+                    echo "memguard OFF — memory is now unbounded until MemoryMax=700M SIGKILLs it,"
+                    echo "which does NOT drain the CSV queue. Re-enable: ./deploy/ops.sh memguard on" ;;
+               on)  "${SSH[@]}" "sudo systemctl enable --now arb-scanner-memguard.timer 2>&1 | tail -1"; echo "memguard ON" ;;
+               *)   "${SSH[@]}" "systemctl list-timers 'arb-scanner*' --all --no-pager | head -5; echo; echo 'recent memguard decisions:'; grep memguard /home/ubuntu/prediction-arb/scanner.log | tail -5" ;;
              esac ;;
 
   # Installs unit files from deploy/ and reloads. Does NOT restart the scanner —
   # a timer change must not interrupt a running measurement window.
   units)     preflight
              say "copying unit files"
-             scp -i "$KEY" deploy/arb-scanner.service deploy/arb-scanner-restart.service \
-                 deploy/arb-scanner-restart.timer deploy/logrotate-arb "$HOST:/tmp/"
-             "${SSH[@]}" "sudo cp /tmp/arb-scanner.service /tmp/arb-scanner-restart.service /tmp/arb-scanner-restart.timer /etc/systemd/system/ \
+             scp -i "$KEY" deploy/arb-scanner.service deploy/arb-scanner-memguard.service \
+                 deploy/arb-scanner-memguard.timer deploy/logrotate-arb "$HOST:/tmp/"
+             "${SSH[@]}" "sudo cp /tmp/arb-scanner.service /tmp/arb-scanner-memguard.service /tmp/arb-scanner-memguard.timer /etc/systemd/system/ \
                && sudo cp /tmp/logrotate-arb /etc/logrotate.d/arb-scanner \
                && sudo chown root:root /etc/logrotate.d/arb-scanner \
                && sudo systemctl daemon-reload \
-               && sudo systemctl reenable arb-scanner-restart.timer 2>&1 | tail -1 \
-               && sudo systemctl restart arb-scanner-restart.timer \
-               && echo 'units installed (scanner NOT restarted)'"
-             say "timer schedule now"
-             "${SSH[@]}" "systemctl list-timers arb-scanner-restart.timer --all --no-pager | head -3" ;;
+               && sudo systemctl disable --now arb-scanner-restart.timer 2>/dev/null; \
+               sudo systemctl enable --now arb-scanner-memguard.timer 2>&1 | tail -1; \
+               echo 'units installed (scanner NOT restarted)'"
+             say "timers now"
+             "${SSH[@]}" "systemctl list-timers 'arb-scanner*' --all --no-pager | head -5" ;;
 
   *)         sed -n '2,23p' "$0"; exit 1 ;;
 esac

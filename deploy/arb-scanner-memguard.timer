@@ -1,0 +1,12 @@
+[Unit]
+Description=Hourly memory check for arb-scanner
+
+[Timer]
+# Hourly is far more often than needed at ~38MB/day, but it is cheap and it
+# bounds how long the process can sit above the threshold before acting.
+OnCalendar=hourly
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target
