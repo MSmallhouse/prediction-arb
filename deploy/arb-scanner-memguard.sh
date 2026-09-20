@@ -23,9 +23,17 @@ LOG=/home/ubuntu/prediction-arb/scanner.log
 
 systemctl is-active --quiet "$UNIT" || { echo "$(date -u +%FT%TZ) memguard: $UNIT not active, nothing to do" >>"$LOG"; exit 0; }
 
-bytes=$(systemctl show "$UNIT" -p MemoryCurrent --value)
-case "$bytes" in ''|'[not set]'|18446744073709551615) exit 0 ;; esac
-mb=$(( bytes / 1024 / 1024 ))
+# Use the main process's RSS, NOT systemd's MemoryCurrent. MemoryCurrent is the
+# cgroup total and includes reclaimable page cache — measured 2026-09-20 it read
+# 416MB while the process RSS was 207MB, so a 500MB threshold on it would have
+# fired at ~250MB of real usage and restarted the scanner continuously. RSS is
+# also the number the heartbeat logs and every baseline in the docs is quoted in,
+# so this keeps the guard and the measurements on the same scale.
+pid=$(systemctl show "$UNIT" -p MainPID --value)
+[ -n "$pid" ] && [ "$pid" != "0" ] || exit 0
+kb=$(ps -o rss= -p "$pid" 2>/dev/null | tr -d ' ')
+[ -n "$kb" ] || exit 0
+mb=$(( kb / 1024 ))
 
 if [ "$mb" -ge "$THRESHOLD_MB" ]; then
   echo "$(date -u +%FT%TZ) memguard: RSS ${mb}MB >= ${THRESHOLD_MB}MB — graceful restart" >>"$LOG"
