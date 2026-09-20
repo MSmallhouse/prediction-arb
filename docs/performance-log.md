@@ -346,3 +346,40 @@ raises the priority of actually running the 72h protocol in
 
 The 1706ms lag and 12 GC collections are the **expected** startup/discovery signature, not
 a regression — steady-state windows the same night showed 16.8-37.9ms and zero collections.
+
+---
+
+## First 19h window, and the OOM that ended it — 2026-09-20
+
+Window: 2026-09-20 01:47:14 → 20:50:34 UTC, **19h 3min**, 0 deploys, ended by a kernel OOM
+kill, not by memguard ([incidents.md](incidents.md#2026-09-20-2050-utc-oom-kill-that-memguard-could-not-see)).
+Longest uninterrupted run since the revival.
+
+**Memory (hourly memguard samples, `ps -o rss=`, n=12):**
+
+| Time (UTC) | RSS | Kalshi markets |
+|---|---|---|
+| ~01:47 start | 137 MB | — |
+| 10:00 | 400 MB | 128 |
+| 13:01 | 384 MB | 128 |
+| 16:01 | 422 MB | 128 |
+| 17:00 | 428 MB | 130 |
+| 20:00 | 367 MB | 128 |
+| 20:50:34 | **590 MB peak + 1009 MB swap peak** | 122 (mid-discovery) |
+
+Market count was flat at 122–130 all day, so the 137 → ~400MB climb is **not** slate size.
+The leak is not dead. ⚠️ Every row here is a lower bound — `VmRSS` excludes swapped pages,
+and the flat 367–370MB readings over the final hour were reclaim capping RSS while swap
+filled. Peak cgroup usage the systemd counters retained: `MemoryPeak` 527MB.
+
+`Consumed 45min 47.741s CPU over 19h 3min wall clock` = **4.0% average CPU**, against the
+t3.micro 10% baseline. No credit pressure.
+
+**Alerting:** 38 `HEALTH ALERT` lines, 37 of them `no price tick` between 08:02 and 16:52
+UTC — all false positives from quiet pre-game hours, each one its own email
+([future-work.md § 7b](future-work.md#7b-per-feed-staleness-and-stop-the-no-tick-email-flood)).
+
+**Trading:** executions after the restart were `BUY_FAILED / no_fill / ORDER_STATE_EXPIRED`
+at `quantity=1` — the known taker race, not a new fault. Buying power on reconnect:
+**$108.27** (2026-09-20 20:50Z), up from the ~$70 quoted elsewhere in these docs.
+

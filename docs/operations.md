@@ -98,8 +98,18 @@ sudo systemctl stop    arb-scanner
   consecutive** breaches, because discovery transiently spikes RSS (394MB mid-discovery vs
   219MB steady state; 512MB with CFB at 6h) and, since both discovery and the check are
   hourly, a single-sample trigger could phase-lock into an endless restart loop.
+  ⚠️ **(c) RSS is blind to swap, which defeats the guard entirely** — found 2026-09-20
+  when the process was OOM-killed at ~1.6GB (590M RSS peak + 1009M swap peak) fifty
+  minutes after memguard logged `RSS 367MB < 500MB — no action`. `MemoryHigh=600M` makes
+  the kernel reclaim before 500MB RSS is ever reached and `MemorySwapMax=infinity` sends
+  the evicted pages to the swapfile, so RSS flattens exactly when memory is growing
+  fastest. **No RSS threshold can fire in that regime.** The fix (threshold on
+  `VmRSS + VmSwap`, cap `MemorySwapMax`, check more often than hourly) is written up in
+  [future-work.md § 7c](future-work.md#7c-memguard-and-the-heartbeat-are-blind-to-swap)
+  and is **not deployed** — a measurement window is open.
   Logrotate runs ~00:49 UTC.
-- 1GB swapfile at `/swapfile`, in `/etc/fstab`.
+- 1GB swapfile at `/swapfile`, in `/etc/fstab`. It is also what turns a bounded cgroup
+  kill into a 1.6GB death spiral; see the memguard trap above.
 
 Unit files live in `deploy/` in this repo:
 
@@ -196,6 +206,27 @@ systemctl show arb-scanner -p ActiveState -p NRestarts -p MemoryCurrent
 grep rss ~/prediction-arb/scanner.log | tail -3      # heartbeat RSS + tasks
 grep "Stores:" ~/prediction-arb/scanner.log | tail -3
 ```
+
+### Reading memory: RSS alone is a lie
+
+⚠️ The heartbeat's `rss` and memguard's threshold both come from `VmRSS`, which counts
+**only resident** pages. Anything the kernel swaps out silently leaves that number. On
+2026-09-20 the process OOM-died at ~1.6GB while RSS read 368MB
+([incidents.md](incidents.md#2026-09-20-2050-utc-oom-kill-that-memguard-could-not-see)).
+Until [§ 7c](future-work.md#7c-memguard-and-the-heartbeat-are-blind-to-swap) ships, read
+the real figure yourself:
+
+```bash
+pid=$(systemctl show arb-scanner -p MainPID --value)
+grep -E 'VmRSS|VmSwap' /proc/$pid/status                  # anon memory = the sum
+systemctl show arb-scanner -p MemoryCurrent -p MemorySwapCurrent -p MemoryPeak
+```
+
+`VmSwap` climbing while `VmRSS` holds flat is the danger signature — it means reclaim is
+capping RSS and the swapfile is filling. Death follows when the swapfile is full, with no
+warning from any number we log. Also check `NRestarts`: `Restart=always` recovers in ~15s,
+faster than the 15-minute NetworkIn alarm, so an OOM kill leaves no trace except that
+counter and a step down in the RSS curve.
 
 **The line that matters most is `Stores: N Kalshi markets, M Poly markets`.**
 `M == 0` with `N > 0` means **discovery is silently broken** — not that markets are quiet.
