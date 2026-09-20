@@ -244,9 +244,11 @@ the scanner logs itself is `vmrss_kb` alone. `nrestarts` and `active_enter` are 
 row so a restart shows up **inside** the curve rather than as an unexplained step, and a
 row is still written (with empty memory fields) when the service is down.
 
+`./deploy/ops.sh pull` collects it into the dated directory alongside the CSVs and
+`scanner.log` — it is world-readable, so no sudo is needed. On the box:
+
 ```bash
-scp -i ~/.ssh/arb-key.pem ubuntu@98.82.172.44:/var/log/arb-memsample.csv .   # needs sudo-readable perms
-ssh ... "sudo tail -20 /var/log/arb-memsample.csv"
+tail -20 /var/log/arb-memsample.csv
 ```
 
 It is **not** deployed by `ops.sh` and not imported by anything in the run loop, so it can

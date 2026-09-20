@@ -149,6 +149,11 @@ NOTE: the daily 10:00 UTC timer will NOT restart a stopped service - start it yo
              mkdir -p "$dest"
              scp -i "$KEY" "$HOST:~/prediction-arb/*.csv" "$dest/" 2>/dev/null || true
              scp -i "$KEY" "$HOST:~/prediction-arb/scanner.log" "$dest/scanner.log" 2>/dev/null || true
+             # Lives in /var/log, not the repo dir, because it is sampled from
+             # outside the service (docs/operations.md § Out-of-process memory
+             # sampling). Pull it too, or the swap data is silently absent from
+             # the dated directory and RSS looks like the whole story again.
+             scp -i "$KEY" "$HOST:/var/log/arb-memsample.csv" "$dest/arb-memsample.csv" 2>/dev/null || true
              echo "pulled into $dest/"; ls -la "$dest" ;;
 
   # logrotate uses delaycompress, so scanner.log.1 is NOT gzipped. Grepping only
