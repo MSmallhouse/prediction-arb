@@ -217,7 +217,7 @@ of them, so the checks assert on **meaning**:
 |---|---|
 | Kalshi confirmed > 0 while Poly confirmed == 0 | Discovery/WS broken (the May–Sep outage) |
 | Empty Kalshi store after 600s uptime | Discovery dead entirely |
-| No price tick for 180s | Feeds stalled |
+| No price tick for 180s | Feeds stalled — **noisy, and blind to one dead feed**; see below |
 | Executor enabled but private WS not ready | Cannot trade (2026-09-19 evening) |
 | ≥25 arbs at 4%+ with zero execution attempts | A filter is blocking everything |
 | CSV writer backlog > 100 | Writer thread wedged |
@@ -241,8 +241,12 @@ The box runs unattended for months, so email matters more than logs.
   aws ec2 describe-iam-instance-profile-associations --region us-east-1 \
     --filters Name=instance-id,Values=i-0923ce83c9a4b7047
   ```
-- `main._send_email_alert()` de-duplicates: an identical problem set is not re-sent for
-  `ALERT_REPEAT_SUPPRESS_S` (1 hour), so a long outage doesn't flood the inbox.
+- `main._send_email_alert()` intends to de-duplicate: an identical problem set should not
+  be re-sent for `ALERT_REPEAT_SUPPRESS_S` (1 hour). ⚠️ **It does not work** for any alert
+  whose text carries a number. The key is the rendered problem string, so
+  `no price tick for 239s` and `...364s` are different keys and suppression never
+  matches. Not yet fixed — see
+  [future-work.md § 7b](future-work.md#7b-per-feed-staleness-and-stop-the-no-tick-email-flood).
 - Emails carry confirmed-market counts, arb count, execution attempts and RSS — enough to
   triage without SSHing in.
 
@@ -255,6 +259,22 @@ aws sns list-subscriptions-by-topic --region us-east-1 \
 ```
 
 A real ARN means live; `PendingConfirmation` means alerts are going nowhere.
+
+### `no price tick for Ns — feeds stalled` is usually noise
+
+Triage before acting: **check the clock and the sport calendar.** `_last_tick` only
+advances on a real book update, so between roughly 08:00 and 17:00 UTC (4am–1pm ET) with
+no MLB or NHL in play, nobody quotes and the 180s check fires every five minutes. On
+2026-09-20 that produced 37 emails overnight, all false positives, on a scanner that was
+healthy the whole time.
+
+It is a real alert in game hours. Confirm with `ops.sh status`: a current heartbeat
+showing `last tick 1s ago` means it already self-healed and no action is needed.
+
+Two known defects behind it — the broken de-duplication above, and the fact that a global
+`_last_tick` cannot see *one* dead feed while the other ticks. Both are written up with
+the fix in
+[future-work.md § 7b](future-work.md#7b-per-feed-staleness-and-stop-the-no-tick-email-flood).
 
 ### Optional channels (no-op when unset)
 

@@ -110,12 +110,66 @@ In the order established when sharding was rejected
 
 ## 7. Close the remaining monitoring gap
 
+### 7a. Dead-man's switch
+
 `ALERT_HEARTBEAT_URL` is **still unset**. SNS cannot detect a process that never runs —
 only the CloudWatch NetworkIn alarm can, and that takes 15 minutes. A dead-man's-switch
 ping (healthchecks.io) is the only mechanism where the **absence** of a signal alerts.
 
 Given this system's history of dying unnoticed for four months, this is cheap insurance.
 See [operations.md § Alerting](operations.md#alerting).
+
+### 7b. Per-feed staleness, and stop the no-tick email flood
+
+Two defects in the same check, found 2026-09-20 after ~37 alert emails landed overnight.
+Both are known and deliberately **not** deployed yet — the memory-leak measurement window
+was open and a restart resets it. Batch these with the next deploy.
+
+**The noise.** `_health_problems()` (main.py) fires `no price tick for {N}s — feeds
+stalled` at `NO_TICK_ALERT_S = 180`. `_last_tick` only advances on a real book update
+(main.py:272 Kalshi, main.py:325 Poly), so between roughly 08:00 and 17:00 UTC — 4am to
+1pm ET, no MLB or NHL in play — nobody quotes and the check fires every five minutes. On
+2026-09-20 all 37 stall alerts fell in that window and every one was a false positive; the
+scanner was healthy throughout (`NRestarts=0`, back to `last tick 1s ago` by 17:12 UTC).
+
+**Why each stall sent its own email.** De-duplication keys on the rendered problem text:
+
+```python
+key = " | ".join(sorted(problems))     # main.py, _send_email_alert
+```
+
+The text embeds the live second count — `239s`, `364s`, `286s` — so every alert is a new
+key and `ALERT_REPEAT_SUPPRESS_S = 3600` never matches. This affects **every** alert
+carrying a number, not just this one. Fix: have `_health_problems()` return
+`(code, text)` pairs and key suppression on the stable code.
+
+**Do not just delete the check.** It is the only detector for a half-open market-data
+socket. `_kalshi_ws_confirmed` and `_poly_ws_confirmed` are cumulative sets that are never
+cleared, so `K: 128/128 confirmed` proves a tick arrived *once*, not that the feed is
+alive — which also means the `p_conf == 0` discovery check cannot fire once the set is
+populated. The dead-man ping (7a) sees a healthy process, and the executor checks only
+watch the private trading WS. Nothing else sees a dead feed on a live process.
+
+**The hole it does not cover.** `_last_tick` is global and satisfied by *either* feed. A
+dead Polymarket socket during a busy evening is invisible: Kalshi ticks every second,
+`_last_tick` stays at 0s, and we silently detect nothing all night against frozen prices.
+That is the May–Sep failure shape again, and the current check sleeps through it.
+
+| Condition | Meaning | Today |
+|---|---|---|
+| Both feeds silent, no games in play | quiet market | emails (noise) |
+| Both feeds silent, games in play | real outage | emails (correct) |
+| One feed silent, the other ticking | one socket dead | **silent** |
+
+**What to build:** track `_last_kalshi_tick` and `_last_poly_tick` separately and alert on
+*divergence* — "Kalshi ticked N times while Poly ticked zero" cannot be explained by a
+quiet market, so it is near-zero false positive at any hour, which is what makes it
+trustworthy at 4am. Demote global quiet-hours no-tick to log-only, or gate its threshold
+on games in play.
+
+**Why this ranks here and not lower:** 30 false alarms a night is not a cosmetic problem.
+It trains the operator to ignore the channel that exists to catch
+[the silent-failure pattern](incidents.md#the-silent-failure-pattern).
 
 ---
 
