@@ -293,6 +293,89 @@ The measurement window in progress as of 2026-09-20 00:24 UTC is the first real 
 
 ---
 
+## Does the arb signal predict the *outcome*, or only the next 15 seconds of price?
+
+**Opened** 2026-09-20. Blocks any decision on hold-to-maturity. Resolvable entirely
+offline — no deploy, no capital, no measurement window disturbed.
+
+Strategy B exits into convergence. An alternative is to **not sell at all** and hold the
+position to game settlement. Sports markets resolve within hours, so the carry cost is
+near zero. Full benefit/risk write-up, including why the naive version is worse than what
+we already do, is in the memory file
+`~/.claude/projects/-Users-msmallhouse-Documents-prediction-arb/memory/project_hold_to_maturity.md`.
+
+The economics only work if the entry price is genuinely below the true win probability.
+Our whole entry signal is *Kalshi disagrees with Polymarket*, which presumes **Kalshi is
+fair value** — an assumption this project has never tested. Everything we have validated
+(77% counterfactual win rate, 67.9% convergence hit rate) measures **price movement over
+15 seconds**, not resolution accuracy. Those are different claims and the second does not
+follow from the first.
+
+**The specific worry is adverse selection.** 52.6% of 4%+ arbs close in under 85ms, faster
+than our round trip, so we only ever fill the *slow* ones. A slow arb is a quote nobody is
+correcting — which makes it likelier that **Kalshi is stale**, not that Polymarket is
+cheap. That is the exact inverse of what the hold thesis needs. If true, hold-to-maturity
+EV is negative and the question closes.
+
+Existing hold-to-expiry data is n=6 and accidental (the 2026-05-14 fictional-fill
+incident): SF@LAD −$0.40, SEA@HOU −$0.46, 4 mixed-outcome SHORT holds.
+See [performance-log.md](performance-log.md#historical-baselines). Noise, not evidence.
+
+**Why live validation is impossible.** Edge is ~2.8c/share against a ~50c standard
+deviation on a binary. 95% confidence needs n ≈ 4·(50/2.8)² ≈ **1300 settled trades**. We
+have 33 closed trades total. This question can only be answered counterfactually.
+
+### Protocol
+
+Offline, against `vps_pull_*/arb_durations_4.csv` plus `historical-data/arb_durations_4_*.csv`
+(~4.5k rows). Nothing runs on the VPS.
+
+1. Take **OPEN rows only** — the ask on the OPEN row is the price we would have paid.
+2. **Replay the full executor gate stack** before counting a row, or the measured
+   population is not the one we trade and the number means nothing:
+   `opener == kalshi`, `sport not in excluded_sports`, `gross_spread >= 0.04`,
+   `poly_depth >= 1`, `0.15 <= poly_ask <= 1.00`, `minutes_to_first_pitch <= 180`.
+3. Resolve the winner per row and compute
+   `hold_pnl = (poly_team won ? 1 : 0) - poly_ask - 0.05 * poly_ask * (1 - poly_ask)`.
+4. Compare against the converged-exit counterfactual (`+0.05 - buy_fee`, gated on whether
+   the +5c touch happened) **on the same rows**.
+5. Report mean, median and `n` per sport. Also report the mean restricted to rows whose
+   `duration_seconds` is above the median — that isolates the adverse-selection question
+   directly, since those are the arbs we actually fill.
+
+**Resolving winners** (both probed live 2026-09-20):
+
+- **ESPN, no auth, unlimited history — use this.**
+  `https://site.api.espn.com/apis/site/v2/sports/{baseball/mlb,hockey/nhl,basketball/nba,football/college-football}/scoreboard?dates=YYYYMMDD`
+  Returns `competitions[0].competitors[].winner` (bool), `status.type.state == "post"`,
+  and `shortName` in `"DET @ ATL"` form — the same shape as our `game` column. One request
+  per (sport, date); the entire backfill is ~450 requests.
+- **Kalshi settled markets — use only as a cross-check.** `status=settled` gives
+  `result` (`yes`/`no`) and `expiration_value` (the winning team) in our exact
+  vocabulary, with **zero name mapping**. But retention is ~2 months: paginating
+  `KXMLBGAME` to exhaustion on 2026-09-20 returned 1750 markets reaching back only to
+  `close_time 2026-07-15`, so it cannot see the Apr–May corpus where most of our arbs
+  live. Its value is validating the ESPN team-name mapping for free on the overlap
+  window — the only part of this with real bug risk. See
+  [platforms.md](platforms.md#settled-markets-and-their-filter-traps).
+
+Match on `game_datetime` + team, accept `state == "post"` only. MLB doubleheaders
+disambiguate on datetime. `config.py` already holds the MLB/NBA/NHL team maps and
+`normalize_cfb_team()`.
+
+⚠️ `arb_durations_*.csv` does **not** contain a Kalshi event ticker — the `event` column
+holds the row type (`OPEN`/`CLOSE`). Resolution must key on `(sport, game, game_datetime)`.
+
+### What each outcome means
+
+| Result | Action |
+|---|---|
+| Mean hold P&L clearly > 0, and holds up on the slow-arb subset | Build the hybrid in [future-work.md](future-work.md#3-truncate-the-losses): keep the +5c maker sell, delete the taker stop-out, hold the remainder to settlement |
+| Mean > 0 overall but ≈ 0 or negative on the slow subset | Adverse selection confirmed. Hold dies; the finding still matters because it means our fills are systematically the worst arbs we detect |
+| Mean ≈ 0 or negative | Close to [findings-rejected.md](findings-rejected.md). Kalshi is not fair value and the convergence framing is the only correct one |
+
+---
+
 ## Health check counted detect-only sports — FIXED 2026-09-20
 
 Recorded because it is a good example of one fix exposing the next.

@@ -118,5 +118,10 @@ analysis says the signal is fine and throughput is the constraint.
   platforms (K:TeamA + P:TeamB). For a single-leg strategy, comparing the *same* team
   across platforms may be the more honest signal — see
   [future-work.md](future-work.md#4-same-team-arb-comparison).
+- **Every exit path assumes we must sell.** Holding to game settlement is never
+  considered, so a position stopped out at −9.5c on a team that goes on to win is booked
+  as a loss that resolution would have erased. Whether that is a real opportunity depends
+  on an untested premise — that Kalshi is fair value — measured by
+  [open-questions.md](open-questions.md#does-the-arb-signal-predict-the-outcome-or-only-the-next-15-seconds-of-price).
 - **56% of 4%+ arbs close in under 85ms** — faster than our fastest VPS→Poly round trip.
   That is a hard structural ceiling on any taker-side strategy.

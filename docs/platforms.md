@@ -35,6 +35,32 @@ CFTC-regulated. REST for discovery, `orderbook_delta` WebSocket for prices.
 
 ---
 
+### Settled markets and their filter traps
+
+Probed 2026-09-20 while scoping the hold-to-maturity counterfactual
+([open-questions.md](open-questions.md#does-the-arb-signal-predict-the-outcome-or-only-the-next-15-seconds-of-price)).
+
+`GET /markets?series_ticker=KXMLBGAME&status=settled&limit=200` returns the game outcome
+directly: **`result`** (`yes`/`no`) and **`expiration_value`** (the winning team's label).
+No auth needed. For outcome backfill this is ideal — it speaks our exact team vocabulary,
+so there is no name-mapping layer to get wrong.
+
+Three traps:
+
+- **`min_close_ts` / `max_close_ts` are silently ignored or silently over-strict.** A
+  window that provably contains settled markets returns `{"cursor":"","markets":[]}` with
+  no error. Same failure shape as the Polymarket `series_id` bug — a filter that returns
+  an empty list looks exactly like "nothing happened". Paginate with the cursor instead
+  and filter client-side.
+- **`status=settled` returns rows whose own `status` field reads `finalized`**, and
+  passing `status=finalized` is rejected: `"invalid status filter"`. Query on one
+  spelling, read back the other.
+- **Retention is roughly two months.** Paginating `KXMLBGAME` to cursor exhaustion on
+  2026-09-20 yielded 1750 markets reaching back only to `close_time 2026-07-15`.
+  `KXNHLGAME` returned zero (offseason). Anything older must come from ESPN.
+
+---
+
 ## Polymarket US (`polymarket.us`)
 
 CFTC-regulated (QCX LLC). Distinct from polymarket.com — **do not assume documented

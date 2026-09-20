@@ -57,6 +57,15 @@ Candidates, cheapest first:
 - **Extend the timeout** — p75 of winning touches is 11.3s against a 15s cutoff, so some
   timeout losses may be winners cut short
   ([open-questions.md](open-questions.md#is-the-15s-timeout-too-short)).
+- **Hold to settlement instead of stopping out** — the most aggressive version of
+  "smaller losers" is *no forced losers*: keep the +5c maker sell, delete the taker
+  stop-out, and let anything unfilled at 15s ride to game resolution. Converts path risk
+  into outcome risk, and because the two known blockers on `quantity > 1` are both
+  exit-side ([open-questions.md](open-questions.md#known-unfixed-bug-quantity-scaling)),
+  a no-exit path sidesteps them entirely. **Gated on** the counterfactual in
+  [open-questions.md](open-questions.md#does-the-arb-signal-predict-the-outcome-or-only-the-next-15-seconds-of-price)
+  — the whole idea rests on Kalshi being fair value, which is untested, and on our fills
+  not being adversely selected, which is the likelier failure.
 
 ---
 
