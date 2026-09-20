@@ -81,16 +81,16 @@ sudo systemctl stop    arb-scanner
   skips the most recent full day. Use both `zgrep` and `grep`.
   The logrotate config needs `su ubuntu ubuntu` or it **silently skips** the group-writable
   directory.
-- `arb-scanner-restart.timer` recycles the service **every ~5 days** at 10:00 UTC (on the
-  1st, 6th, 11th, 16th, 21st and 26th) to cap the memory leak. Changed from daily on
-  2026-09-20: daily recycling reset the RSS baseline before any leak window could complete,
-  so the question was unanswerable. At the historical 38MB/day this lands at ~405-443MB
-  against `MemoryHigh=600M`, with ~10 days of headroom — a missed recycle is not an
-  incident, and `MemoryMax` + `OOMPolicy=restart` is the real backstop. Logrotate runs
-  ~00:49 UTC. Install changes with `./deploy/ops.sh units` (does not restart the scanner);
-  inspect or pause with `./deploy/ops.sh timer [show|off|on]`.
-- Memory caps: `MemoryHigh=600M`, `MemoryMax=700M`, `OOMPolicy=restart`, `Restart=always`.
-  Raised from 550/650 to fit CFB.
+- **No scheduled restart.** `arb-scanner-memguard.timer` checks hourly and restarts the
+  service **only if RSS >= 500MB** (`deploy/arb-scanner-memguard.sh`). Changed 2026-09-20,
+  replacing a daily and then a ~5-day calendar recycle: a periodic restart reset the RSS
+  baseline whether or not memory was a problem, so the memory-leak curve was permanently
+  fragmented and checking in just after a recycle gave hours of data instead of days.
+  Restart-on-need means the log holds one continuous curve for as long as memory stays
+  flat. Inspect with `./deploy/ops.sh memguard`; disable with `memguard off` (then memory
+  is unbounded until `MemoryMax` SIGKILLs it, which does **not** drain the CSV queue).
+  The 500MB threshold sits below `MemoryHigh=600M` so we restart gracefully before the
+  cgroup starts throttling. Logrotate runs ~00:49 UTC.
 - 1GB swapfile at `/swapfile`, in `/etc/fstab`.
 
 Unit files live in `deploy/` in this repo:
@@ -122,6 +122,8 @@ than remembered. Run it from the repo root.
 ./deploy/ops.sh stop | start
 ./deploy/ops.sh logs [n]
 ./deploy/ops.sh reconcile    # runs reconcile.py on the box
+./deploy/ops.sh memguard     # memory-guard timer status + recent decisions
+./deploy/ops.sh units        # install systemd units + logrotate (no scanner restart)
 ./deploy/ops.sh pull         # CSVs + log into a dated vps_pull_* dir
 ./deploy/ops.sh heartbeats   # full RSS/lag history across rotated logs
 ```
@@ -157,7 +159,7 @@ executing the old code, with no error anywhere. `ops.sh deploy` always restarts.
 
 ⚠️ **Nothing deploys automatically.** There is no webhook, cron, or git hook on the box —
 verified 2026-09-20. Pushing to GitHub does nothing until someone runs `ops.sh deploy`.
-`arb-scanner-restart.timer` restarts whatever is already on disk; it does not fetch.
+`arb-scanner-memguard.timer` restarts whatever is already on disk; it does not fetch.
 
 Expect the **first** post-restart heartbeat to show a large `loop lag max` and 12-13 GC
 collections. That is the known startup/discovery signature, not a regression

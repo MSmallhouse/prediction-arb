@@ -13,7 +13,7 @@ When one is answered, move it to [findings-validated.md](findings-validated.md) 
 **Opened** 2026-09-19. First re-read due 2026-09-22; ideally 2026-09-26.
 
 The 2026-05-15 OOM proved growth to 528MB over ~14 days (**≈38 MB/day**). systemd caps and
-the daily recycle make it non-fatal, but nothing has identified **what** leaks.
+the memguard restart make it non-fatal, but nothing has identified **what** leaks.
 
 **Baseline to compare against:** 275MB RSS / 8 tasks at 134 Kalshi + 114 Poly markets
 (2026-09-19 19:48 UTC, freshly started).
@@ -50,21 +50,23 @@ grep "Stores:" ~/prediction-arb/scanner.log
 | Sawtooth that recovers | GC churn, not a leak |
 | Flat across a full 24h window | Leak died with the discovery rewrite — **close this item** |
 
-**Caveats when reading:** (a) `arb-scanner-restart.timer` recycles every ~5 days at 10:00
-UTC (1st, 6th, 11th, 16th, 21st, 26th), so each window is a complete ~5-day curve and RSS
-resets at the boundary — do not read a recycle drop as a fix;
-(b) logrotate runs ~00:49 UTC, so a rotated file spans a recycle boundary mid-file;
+**Caveats when reading:** (a) since 2026-09-20 there is **no scheduled restart** — the
+process runs until `arb-scanner-memguard` sees RSS >= 500MB, so the curve is continuous for
+as long as memory stays flat. A drop means memguard fired (grep `memguard` in the log to
+confirm) or a deploy happened; do not read either as a fix;
+(b) logrotate runs ~00:49 UTC, so a rotated file can span a restart boundary mid-file;
 (c) market count drives baseline RSS, so compare windows with similar `Stores:` counts, not
 raw peaks (MLB slate size swings, and NHL/NBA regular seasons start in October).
 
-**Wait for at least one complete recycle window** (~5 days) before drawing conclusions; two
-windows for a rate you would act on. Since 2026-09-20 the recycle cadence is ~5 days
-precisely so a single window is long enough to read — this no longer requires disabling
-anything. For an even longer curve, `./deploy/ops.sh timer off`, but then memory is
-unbounded until `MemoryMax` fires, so **re-enable with `./deploy/ops.sh timer on`.**
+**Wait at least 5 days of uninterrupted runtime** before drawing conclusions; ~10 days for
+a rate you would act on. Because restarts are now memory-triggered rather than scheduled,
+**whenever you check you have the whole history back to the last restart** — which, if the
+leak really is gone, is the full 30 days logrotate keeps. That was the point of the change:
+under the old daily/5-day recycle, checking in just after a recycle gave you hours.
 
-**First complete 5-day window: 2026-09-21 10:00 UTC → 2026-09-26 10:00 UTC.** The window
-open right now is short (the 21st was the next scheduled date), so read the one after it.
+`./deploy/ops.sh heartbeats` prints the curve; `./deploy/ops.sh memguard` shows the timer
+and the last few memguard decisions. **The only thing that now truncates the window is our
+own deploys** — see the hazard below.
 
 **Next step only if growth is real:** hourly `gc` object-count histogram by type (cheap,
 sampled) to name the culprit. `tracemalloc` top-10 by traceback **only** if the histogram
