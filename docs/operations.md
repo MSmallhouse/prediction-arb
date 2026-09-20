@@ -82,7 +82,8 @@ sudo systemctl stop    arb-scanner
   The logrotate config needs `su ubuntu ubuntu` or it **silently skips** the group-writable
   directory.
 - **No scheduled restart.** `arb-scanner-memguard.timer` checks hourly and restarts the
-  service **only if RSS >= 500MB** (`deploy/arb-scanner-memguard.sh`). Changed 2026-09-20,
+  service **only if the main process's RSS is >= 500MB on two consecutive checks**
+  (`deploy/arb-scanner-memguard.sh`). Changed 2026-09-20,
   replacing a daily and then a ~5-day calendar recycle: a periodic restart reset the RSS
   baseline whether or not memory was a problem, so the memory-leak curve was permanently
   fragmented and checking in just after a recycle gave hours of data instead of days.
@@ -90,7 +91,14 @@ sudo systemctl stop    arb-scanner
   flat. Inspect with `./deploy/ops.sh memguard`; disable with `memguard off` (then memory
   is unbounded until `MemoryMax` SIGKILLs it, which does **not** drain the CSV queue).
   The 500MB threshold sits below `MemoryHigh=600M` so we restart gracefully before the
-  cgroup starts throttling. Logrotate runs ~00:49 UTC.
+  cgroup starts throttling. Two traps found while building it, both verified on the box:
+  (a) it reads the **process RSS**, not systemd's `MemoryCurrent` — the latter is the
+  cgroup total including reclaimable page cache and read 416MB when RSS was 207MB, so a
+  500MB threshold on it would fire at ~250MB of real usage; (b) it requires **two
+  consecutive** breaches, because discovery transiently spikes RSS (394MB mid-discovery vs
+  219MB steady state; 512MB with CFB at 6h) and, since both discovery and the check are
+  hourly, a single-sample trigger could phase-lock into an endless restart loop.
+  Logrotate runs ~00:49 UTC.
 - 1GB swapfile at `/swapfile`, in `/etc/fstab`.
 
 Unit files live in `deploy/` in this repo:
