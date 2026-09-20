@@ -52,14 +52,23 @@ assert_no_open_position() {
 
 # Python holds the code in memory, so files on disk can be newer than what is
 # running. Restart is never optional after changing code.
+# Capture the log position BEFORE a restart so verify_running can tell a NEW
+# heartbeat from the stale one already in the log. Without this the wait loop
+# matches the pre-restart heartbeat instantly and reports a dead process as
+# healthy — which is precisely the false-confidence this script exists to stop.
+mark_log() { "${SSH[@]}" "wc -l < $DIR/scanner.log | tr -d ' '"; }
+
 verify_running() {
-  say "waiting for a post-restart heartbeat (up to ~6 min)"
+  local mark="${1:-0}"
+  say "waiting for a NEW heartbeat after log line $mark (up to ~7 min)"
   "${SSH[@]}" "
-    for i in \$(seq 1 40); do
-      hb=\$(grep heartbeat $DIR/scanner.log | tail -1)
-      case \"\$hb\" in *' live '*) echo \"\$hb\"; break;; esac
+    for i in \$(seq 1 42); do
+      hb=\$(tail -n +\$(( $mark + 1 )) $DIR/scanner.log | grep heartbeat | grep ' live ' | tail -1)
+      [ -n \"\$hb\" ] && { echo \"\$hb\"; exit 0; }
       sleep 10
-    done"
+    done
+    echo 'NO NEW HEARTBEAT — service did not come up healthy'; exit 1" \
+    || die "no post-restart heartbeat appeared. Check: ./deploy/ops.sh logs 60"
   say "post-restart health"
   cmd_status
   local errs
@@ -105,15 +114,17 @@ cmd_deploy() {
   say "syntax-checking every module before restart"
   "${SSH[@]}" "cd $DIR && for f in \$(git ls-files '*.py'); do python3 -c \"import ast,sys;ast.parse(open(sys.argv[1]).read())\" \$f || exit 1; done && echo 'all modules parse'"
   say "restarting"
+  local mark; mark=$(mark_log)
   "${SSH[@]}" "sudo systemctl restart arb-scanner && echo restarted"
-  verify_running
+  verify_running "$mark"
 }
 
 cmd_restart() {
   preflight
   say "checking for open positions"; assert_no_open_position
+  local mark; mark=$(mark_log)
   "${SSH[@]}" "sudo systemctl restart arb-scanner && echo restarted"
-  verify_running
+  verify_running "$mark"
 }
 
 case "${1:-status}" in
@@ -122,7 +133,7 @@ case "${1:-status}" in
   restart)   cmd_restart ;;
   stop)      preflight; assert_no_open_position; "${SSH[@]}" "sudo systemctl stop arb-scanner && echo stopped.
 NOTE: the daily 10:00 UTC timer will NOT restart a stopped service - start it yourself." ;;
-  start)     preflight; "${SSH[@]}" "sudo systemctl start arb-scanner && echo started"; verify_running ;;
+  start)     preflight; MARK=$(mark_log); "${SSH[@]}" "sudo systemctl start arb-scanner && echo started"; verify_running "$MARK" ;;
   logs)      preflight; "${SSH[@]}" "tail -${2:-40} $DIR/scanner.log" ;;
   reconcile) preflight; "${SSH[@]}" "cd $DIR && python3 reconcile.py executions.csv" ;;
   *)         sed -n '2,20p' "$0"; exit 1 ;;
