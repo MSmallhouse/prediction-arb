@@ -256,6 +256,24 @@ No `TODO`/`FIXME`/`XXX` comments exist anywhere in the repo.
 
 ---
 
+## Measurement window currently open
+
+**Started 2026-09-20 01:47:14 UTC.** There is no scheduled restart any more, so this window
+runs until either memory crosses the memguard threshold or we deploy something. Read it
+with `./deploy/ops.sh heartbeats`; confirm no restart intervened with
+`./deploy/ops.sh memguard` (it prints the last few decisions) and by checking
+`ActiveEnterTimestamp` in `ops.sh status`.
+
+Baseline at window start: **219MB RSS at 244 Kalshi / 226 Poly markets**, 10 tasks.
+
+What the answer looks like:
+- **Flat across 5+ days** → the leak died with the discovery rewrite. Close the item.
+- **Linear growth** → measure MB/day and compare against the historical 38MB/day before
+  deciding whether it is worth chasing.
+- **Step up at each hourly `Stores:` line** → the discovery path, the long-standing suspect.
+
+---
+
 ## ⚠️ Our own restarts are destroying the memory-leak measurement
 
 Not a question so much as a standing hazard. The leak protocol above needs **72h / 3
