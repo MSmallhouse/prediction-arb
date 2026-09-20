@@ -228,6 +228,35 @@ warning from any number we log. Also check `NRestarts`: `Restart=always` recover
 faster than the 15-minute NetworkIn alarm, so an OOM kill leaves no trace except that
 counter and a step down in the RSS curve.
 
+### Out-of-process memory sampling
+
+Added 2026-09-20 21:48 UTC, **while a measurement window was open** — that is the whole
+point of it living outside the service. `/usr/local/bin/arb-memsample.sh` (repo copy:
+`deploy/arb-memsample.sh`) runs from `/etc/cron.d/arb-memsample` every 5 minutes and
+appends to `/var/log/arb-memsample.csv`:
+
+```
+ts,pid,nrestarts,active_enter,vmrss_kb,vmswap_kb,anon_kb,cg_current,cg_swap,cg_peak,kalshi,poly
+```
+
+`anon_kb = vmrss_kb + vmswap_kb` is the number that actually predicts an OOM; everything
+the scanner logs itself is `vmrss_kb` alone. `nrestarts` and `active_enter` are on every
+row so a restart shows up **inside** the curve rather than as an unexplained step, and a
+row is still written (with empty memory fields) when the service is down.
+
+```bash
+scp -i ~/.ssh/arb-key.pem ubuntu@98.82.172.44:/var/log/arb-memsample.csv .   # needs sudo-readable perms
+ssh ... "sudo tail -20 /var/log/arb-memsample.csv"
+```
+
+It is **not** deployed by `ops.sh` and not imported by anything in the run loop, so it can
+be changed or removed with `sudo rm /etc/cron.d/arb-memsample` at any time without
+restarting the scanner. The repo copy exists for provenance only — editing it changes
+nothing on the box.
+
+This is instrumentation, not a fix. The guard itself is still blind; see
+[future-work.md § 7c](future-work.md#7c-memguard-and-the-heartbeat-are-blind-to-swap).
+
 **The line that matters most is `Stores: N Kalshi markets, M Poly markets`.**
 `M == 0` with `N > 0` means **discovery is silently broken** — not that markets are quiet.
 That exact signature ran for four months while heartbeats looked healthy.

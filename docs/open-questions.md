@@ -32,6 +32,10 @@ each. The rewrite holds one page (~50 events). **Confirm this before chasing any
 ### Protocol
 
 ```bash
+# FIRST: the out-of-process sampler, the only source that counts swapped pages.
+# 5-minute cadence, survives restarts, added 2026-09-20 21:48 UTC.
+sudo tail -100 /var/log/arb-memsample.csv        # anon_kb = vmrss_kb + vmswap_kb
+
 # all heartbeat samples, oldest first. delaycompress means scanner.log.1 is NOT
 # gzipped, so grepping only *.gz silently skips the most recent full day.
 zgrep -h "rss" ~/prediction-arb/scanner.log.*.gz 2>/dev/null
@@ -48,7 +52,7 @@ grep "Stores:" ~/prediction-arb/scanner.log
 | Step up at each hourly `Stores:` line | Discovery/REST path — retained event payloads. Biggest suspect |
 | Linear between discoveries | WS tick path — book state, per-tick allocations |
 | Sawtooth that recovers | GC churn, not a leak |
-| Flat across a full 24h window | Leak died with the discovery rewrite — **close this item** |
+| Flat across a full 24h window | Leak died with the discovery rewrite — **close this item**, but only on `anon_kb`. The 19h run of 2026-09-20 was flat in RSS for 18h and then OOM-died; RSS flatness alone proves nothing |
 
 **Caveats when reading:** (a) since 2026-09-20 there is **no scheduled restart** — the
 process runs until `arb-scanner-memguard` sees RSS >= 500MB, so the curve is continuous for

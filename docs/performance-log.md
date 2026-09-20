@@ -355,22 +355,36 @@ Window: 2026-09-20 01:47:14 → 20:50:34 UTC, **19h 3min**, 0 deploys, ended by 
 kill, not by memguard ([incidents.md](incidents.md#2026-09-20-2050-utc-oom-kill-that-memguard-could-not-see)).
 Longest uninterrupted run since the revival.
 
-**Memory (hourly memguard samples, `ps -o rss=`, n=12):**
+**Memory — every hourly memguard sample, `ps -o rss=`, n=19, in order:**
 
-| Time (UTC) | RSS | Kalshi markets |
-|---|---|---|
-| ~01:47 start | 137 MB | — |
-| 10:00 | 400 MB | 128 |
-| 13:01 | 384 MB | 128 |
-| 16:01 | 422 MB | 128 |
-| 17:00 | 428 MB | 130 |
-| 20:00 | 367 MB | 128 |
-| 20:50:34 | **590 MB peak + 1009 MB swap peak** | 122 (mid-discovery) |
+```
+207, 403, 457, 396, 390, 356, 325, 383, 400, 411,
+395, 384, 394, 397, 422, 428, 388, 370, 367   (MB)
+```
 
-Market count was flat at 122–130 all day, so the 137 → ~400MB climb is **not** slate size.
-The leak is not dead. ⚠️ Every row here is a lower bound — `VmRSS` excludes swapped pages,
-and the flat 367–370MB readings over the final hour were reclaim capping RSS while swap
-filled. Peak cgroup usage the systemd counters retained: `MemoryPeak` 527MB.
+then dead at **590MB RSS peak + 1009MB swap peak** during the 20:50 discovery cycle.
+
+**This is a plateau, not a slope.** RSS reaches ~400MB within two hours of start (137MB at
+launch) and then oscillates **325–457MB with no trend across the remaining 18 hours**, at
+a flat market count of 122–130 Kalshi. The documented ≈38 MB/day would add ~30MB over this
+window — smaller than the ±60MB discovery noise band, so this run **neither confirms nor
+refutes** the historical rate. What it does revise is the steady state: ~400MB here versus
+the ~265MB in [Resource baselines](#resource-baselines) above.
+
+⚠️ Do not read the 137 → 400MB step as leak growth. That is startup reaching working set.
+
+⚠️ Every number here is a lower bound: `VmRSS` excludes swapped pages, and the flat
+367–370MB over the final hour was reclaim capping RSS while the swapfile filled.
+`MemoryPeak` retained 527MB.
+
+**The gap this leaves.** RSS was flat and mid-range at 20:00; fifty minutes later the
+process was dead at ~1.6GB. Nothing in this curve grew into that — it was either swap
+(invisible to RSS) or one discovery burst allocating ~1GB outright, and hourly RSS samples
+cannot tell those apart. A clean 72h window measured the same way would have the same
+blind spot: the "flat across 24h → close this item" test would have **passed** on this run
+at 20:00, forty minutes before the OOM. Hence the out-of-process sampler added
+2026-09-20 21:48 UTC ([operations.md](operations.md#out-of-process-memory-sampling)),
+which records `VmRSS + VmSwap` every 5 minutes without touching the service.
 
 `Consumed 45min 47.741s CPU over 19h 3min wall clock` = **4.0% average CPU**, against the
 t3.micro 10% baseline. No credit pressure.
