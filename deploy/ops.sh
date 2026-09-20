@@ -10,6 +10,8 @@
 #   ./deploy/ops.sh stop|start
 #   ./deploy/ops.sh logs [n]    tail scanner.log
 #   ./deploy/ops.sh reconcile   run reconcile.py on the box
+#   ./deploy/ops.sh pull        copy CSVs + scanner.log down for analysis
+#   ./deploy/ops.sh heartbeats  full RSS/lag history (reads rotated logs correctly)
 #
 # Add --force to restart/deploy to override the open-position guard.
 
@@ -136,5 +138,27 @@ NOTE: the daily 10:00 UTC timer will NOT restart a stopped service - start it yo
   start)     preflight; MARK=$(mark_log); "${SSH[@]}" "sudo systemctl start arb-scanner && echo started"; verify_running "$MARK" ;;
   logs)      preflight; "${SSH[@]}" "tail -${2:-40} $DIR/scanner.log" ;;
   reconcile) preflight; "${SSH[@]}" "cd $DIR && python3 reconcile.py executions.csv" ;;
+
+  # Pulls into a dated directory rather than over the repo-root CSVs, which are
+  # stale subsets from May. Overwriting them would destroy the only local copy
+  # of convergence_log.csv, which was never re-pulled.
+  pull)      preflight
+             dest="vps_pull_$(date -u +%Y%m%d_%H%M)"
+             mkdir -p "$dest"
+             scp -i "$KEY" "$HOST:~/prediction-arb/*.csv" "$dest/" 2>/dev/null || true
+             scp -i "$KEY" "$HOST:~/prediction-arb/scanner.log" "$dest/scanner.log" 2>/dev/null || true
+             echo "pulled into $dest/"; ls -la "$dest" ;;
+
+  # logrotate uses delaycompress, so scanner.log.1 is NOT gzipped. Grepping only
+  # *.gz silently skips the most recent full day — the exact mistake the memory
+  # -leak protocol in docs/open-questions.md warns about. Read all three tiers.
+  heartbeats) preflight
+             "${SSH[@]}" "cd $DIR && { zgrep -h 'rss' scanner.log.*.gz 2>/dev/null; grep -h 'rss' scanner.log.1 2>/dev/null; grep -h 'rss' scanner.log; }"
+             echo
+             echo "  Discovery boundaries to align against (RSS stepping up at each"
+             echo "  'Stores:' line points at the discovery path; linear growth between"
+             echo "  them points at the WS tick path; flat across 24h closes the leak)."
+             echo "  NOTE: the 10:00 UTC recycle timer resets RSS daily — a drop there"
+             echo "  is the restart, not a fix. Needs 72h/3 windows to mean anything." ;;
   *)         sed -n '2,20p' "$0"; exit 1 ;;
 esac

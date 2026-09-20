@@ -92,7 +92,15 @@ than remembered. Run it from the repo root.
 ./deploy/ops.sh stop | start
 ./deploy/ops.sh logs [n]
 ./deploy/ops.sh reconcile    # runs reconcile.py on the box
+./deploy/ops.sh pull         # CSVs + log into a dated vps_pull_* dir
+./deploy/ops.sh heartbeats   # full RSS/lag history across rotated logs
 ```
+
+`pull` writes to a dated directory rather than over the repo-root CSVs — those are stale
+May subsets, and overwriting them would destroy the only local copy of
+`convergence_log.csv`. `heartbeats` reads `*.gz` + `.log.1` + `.log`, because
+`delaycompress` leaves `scanner.log.1` ungzipped and grepping only `*.gz` silently skips
+the most recent full day.
 
 Add `--force` to override the open-position guard on `restart`/`deploy`/`stop`.
 

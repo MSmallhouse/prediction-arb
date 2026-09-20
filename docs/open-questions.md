@@ -246,3 +246,22 @@ doing:
 | `reconcile.short_position()` is a no-op passthrough | Harmless |
 
 No `TODO`/`FIXME`/`XXX` comments exist anywhere in the repo.
+
+---
+
+## ⚠️ Our own restarts are destroying the memory-leak measurement
+
+Not a question so much as a standing hazard. The leak protocol above needs **72h / 3
+recycle windows** of uninterrupted runtime. Every deploy restarts the service and resets
+RSS to its cold baseline, so the window starts over.
+
+On 2026-09-19/20 the service was restarted **four times in under an hour** (three deploys
+plus the reconciliation verification). Useful work, but it means the leak measurement has
+effectively not started yet.
+
+**Rule going forward:** before deploying anything non-urgent, check how long the current
+window has run (`./deploy/ops.sh status` shows `ActiveEnterTimestamp`). If a measurement
+window is in progress and the change can wait, let it run. Batch small changes into one
+deploy rather than several.
+
+The measurement window in progress as of 2026-09-20 00:24 UTC is the first real one.
