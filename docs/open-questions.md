@@ -58,8 +58,8 @@ raw peaks (MLB slate size swings, and NHL/NBA regular seasons start in October).
 
 **Wait at least 72h / 3 recycle windows** before drawing conclusions; 7 days for a rate you
 would act on. For an uninterrupted longer curve,
-`sudo systemctl stop arb-scanner-restart.timer` — at 38MB/day the 700M cap gives ~10 days
-of headroom and systemd restarts on breach anyway. **Remember to re-enable it.**
+`./deploy/ops.sh timer off` — at 38MB/day the 700M cap gives ~10 days of headroom and
+systemd restarts on breach anyway. **Re-enable with `./deploy/ops.sh timer on`.**
 
 **Next step only if growth is real:** hourly `gc` object-count histogram by type (cheap,
 sampled) to name the culprit. `tracemalloc` top-10 by traceback **only** if the histogram

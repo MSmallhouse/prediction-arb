@@ -12,6 +12,7 @@
 #   ./deploy/ops.sh reconcile   run reconcile.py on the box
 #   ./deploy/ops.sh pull        copy CSVs + scanner.log down for analysis
 #   ./deploy/ops.sh heartbeats  full RSS/lag history (reads rotated logs correctly)
+#   ./deploy/ops.sh timer [on|off]   daily 10:00 UTC recycle (off = long leak window)
 #
 # Add --force to restart/deploy to override the open-position guard.
 
@@ -160,5 +161,17 @@ NOTE: the daily 10:00 UTC timer will NOT restart a stopped service - start it yo
              echo "  them points at the WS tick path; flat across 24h closes the leak)."
              echo "  NOTE: the 10:00 UTC recycle timer resets RSS daily — a drop there"
              echo "  is the restart, not a fix. Needs 72h/3 windows to mean anything." ;;
-  *)         sed -n '2,20p' "$0"; exit 1 ;;
+  # The daily recycle caps the memory leak but also resets every measurement
+  # window. Turn it off for an uninterrupted leak curve, then TURN IT BACK ON.
+  timer)     preflight
+             case "${2:-show}" in
+               off) "${SSH[@]}" "sudo systemctl stop arb-scanner-restart.timer && sudo systemctl disable arb-scanner-restart.timer 2>&1 | tail -1"
+                    echo "recycle timer OFF. At ~38MB/day the 700M cap gives ~10 days of"
+                    echo "headroom and systemd restarts on breach anyway. RE-ENABLE IT:"
+                    echo "  ./deploy/ops.sh timer on" ;;
+               on)  "${SSH[@]}" "sudo systemctl enable --now arb-scanner-restart.timer 2>&1 | tail -1"; echo "recycle timer ON" ;;
+               *)   "${SSH[@]}" "systemctl list-timers arb-scanner-restart.timer --all --no-pager | head -3" ;;
+             esac ;;
+
+  *)         sed -n '2,22p' "$0"; exit 1 ;;
 esac

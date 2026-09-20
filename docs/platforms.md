@@ -109,7 +109,7 @@ implemented; at ~$70 balance and `quantity=1` the blast radius is small.
 `portfolio.positions()` and `portfolio.activities()` record what **happened**. When they
 disagree, the API wins — and so does the user's lived experience in the Polymarket app.
 
-Run `python3 reconcile.py executions.csv` after every session.
+Run `./deploy/ops.sh reconcile` after every session.
 
 **Caveat:** the activities API may not include our maker-side fills, so `SELL_CONVERGED`
 maker hits can show as "logged sell with no trade" false positives. The truer signal is

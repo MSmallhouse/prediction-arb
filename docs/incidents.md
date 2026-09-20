@@ -125,7 +125,7 @@ the bid by 1c** each attempt. If all attempts fail: log
 an actually-verified fill. Rows written before 2026-05-14 do not.
 
 **Lasting rule:** `executions.csv` is *intent*, not ground truth. Run
-`python3 reconcile.py executions.csv` after every session; when the CSV and
+`./deploy/ops.sh reconcile` after every session; when the CSV and
 `portfolio.activities()` disagree, the API wins. See
 [performance-log.md](performance-log.md) for which baselines this invalidates.
 
@@ -169,8 +169,7 @@ into swap** (`rss` fell from 275MB to 16MB). It kept trading, but with its heap 
 
 **Rule:** never run a second full scanner on the VPS while the service is active. The
 service is `enabled` and auto-restarts, so a manual `python3 main.py` is a *second
-executor trading the same Polymarket account*. Check `systemctl is-active arb-scanner`
-first. If it happens, restart the service to pull the heap back into RAM.
+executor trading the same Polymarket account*. Run `./deploy/ops.sh status` first. If it happens, restart the service to pull the heap back into RAM.
 
 ---
 

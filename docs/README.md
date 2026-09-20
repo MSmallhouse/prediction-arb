@@ -15,13 +15,21 @@ Everything long-form lives in this directory.
 | [platforms.md](platforms.md) | Kalshi + Polymarket US wire details, auth, API traps, undocumented behaviour | Touching a scraper or the API |
 | [sports.md](sports.md) | Per-sport support, slug derivation, team-name maps, CFB matching + capacity | Adding a sport, or a sport matches 0 markets |
 | [strategy-b.md](strategy-b.md) | The trading strategy, every filter, every tunable, exit paths | Changing execution behaviour |
-| [operations.md](operations.md) | VPS, systemd, deploy, logs, alerting, key rotation, runbook | Deploying, or the box looks dead |
+| [operations.md](operations.md) | Operating model, `ops.sh`, VPS, systemd, deploy, logs, alerting, key rotation | Deploying, or the box looks dead |
 | [performance-log.md](performance-log.md) | Chronological results: fills, P&L, latency, arb stats, per-session baselines | Judging whether a change helped |
 | [findings-validated.md](findings-validated.md) | Approaches that measurably worked, with the evidence | Before re-litigating a solved question |
 | [findings-rejected.md](findings-rejected.md) | Dead ends, reverted changes, rejected designs — and why | Before proposing an idea that "sounds obvious" |
 | [incidents.md](incidents.md) | Post-mortems of every outage and silent failure | Something broke; check if it broke before |
 | [open-questions.md](open-questions.md) | Unresolved investigations, each with a measurement protocol | Picking up research |
 | [future-work.md](future-work.md) | Unimplemented ideas, ranked by leverage | Choosing what to build next |
+
+## Operating the live system
+
+Claude runs the infrastructure; the user directs. Everything goes through one script —
+`./deploy/ops.sh status | deploy | restart | stop | start | logs | pull | reconcile |
+heartbeats | timer`. It encodes the safety checks (open-position guard, syntax check before
+restart, wait for a genuinely new heartbeat) so they are executed rather than remembered.
+Details and the escalation rules: [operations.md](operations.md#operating-model).
 
 ## The one-line thesis
 

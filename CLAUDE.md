@@ -38,12 +38,12 @@ the full filter stack). **Fill rate is the bottleneck** — 52.6% of 4%+ arbs cl
   → [docs/incidents.md](docs/incidents.md#the-silent-failure-pattern)
 - **`Stores: N Kalshi markets, M Poly markets`** — `M == 0` with `N > 0` means discovery is
   broken, not that markets are quiet. That signature ran for four months undetected.
-- **`executions.csv` is intent, not truth.** Run `python3 reconcile.py executions.csv`
-  after every session. When it disagrees with `portfolio.activities()`, the API wins — and
-  so does the user's lived experience in the Polymarket app.
+- **`executions.csv` is intent, not truth.** Run `./deploy/ops.sh reconcile` after every
+  session. When it disagrees with `portfolio.activities()`, the API wins — and so does the
+  user's lived experience in the Polymarket app.
 - **Never start the scanner by hand on the VPS.** The systemd service is `enabled` and
-  auto-restarts; a manual run is a second executor on the same account. Check
-  `systemctl is-active arb-scanner` first.
+  auto-restarts; a manual run is a second executor trading the same Polymarket account.
+  `ops.sh status` before anything.
 - **Polymarket SHORT prices are inverted** — send `1 - yes_ask`. Silent and expensive when
   wrong.
 - **The arb tracker needs the flattened FULL set of arbs**, not just the changed ones —
@@ -59,7 +59,7 @@ the full filter stack). **Fill rate is the bottleneck** — 52.6% of 4%+ arbs cl
 - **CFB is detect-only** (`excluded_sports = {"CFB"}`) — thresholds were fitted on baseball
   and hockey.
 
-## Current state (2026-09-19)
+## Current state (2026-09-20)
 
 Live on AWS EC2 t3.micro under systemd, trading MLB + NHL, detecting CFB. Revived
 2026-09-19 after a 127-day outage caused by four independent silent breakages. Net P&L over
@@ -68,8 +68,23 @@ six gap losses; converged exits are 8/8 profitable. Exits logged before 2026-05-
 not fill-verified, so that figure is an upper bound.
 
 Highest-leverage open items: the memory leak's true source, event-loop lag at 32-72ms, and
-whether the velocity filter generalises. See
+whether the velocity filter generalises. All three are **blocked on elapsed runtime, not
+work** — the leak protocol alone needs 72h uninterrupted, and our own deploys reset it.
+Batch changes while a measurement window is open. See
 [docs/open-questions.md](docs/open-questions.md).
+
+## Operating model
+
+**Claude runs the infrastructure.** Building, deploying, restarting, stopping and health
+checks on the VPS and AWS are Claude's to execute via `./deploy/ops.sh`; the user directs
+rather than types. Do not hand the user a command to paste as the default answer — run it,
+report what happened, and surface the decision instead of the keystrokes.
+
+Still check in before acting: anything destructive, anything that stops trading, and
+anything with an open position at risk. Approval for one action is not approval for the
+next. Manual terminal work remains a valid fallback when tooling cannot do it (or when the
+user asks), and a few things genuinely require the user — anything needing an interactive
+login, or a new third-party account. → [docs/operations.md](docs/operations.md)
 
 ## Quick reference
 
@@ -84,5 +99,6 @@ Never `scp` code or restart by hand — `ops.sh` encodes the safety checks, and 
 desynchronizes the box's git state. Nothing deploys automatically; pushing does nothing
 until `ops.sh deploy` runs. SSH is IP-locked, so a timeout ≠ a dead box.
 
-Analyse `vps_pull_20260919/`, not the stale repo-root CSVs. Read CLOSE rows only; quote
+Analyse a `vps_pull_*/` directory (`ops.sh pull` makes a dated one), never the stale
+repo-root CSVs. Read CLOSE rows only; quote
 medians, never means. → [docs/performance-log.md](docs/performance-log.md#how-to-read-the-data-files-without-getting-it-wrong)

@@ -1,5 +1,21 @@
 # Operations runbook
 
+## Operating model
+
+**Claude operates this infrastructure.** Building, deploying, restarting, stopping, health
+checks and data pulls on the VPS and AWS are Claude's to execute — via
+[`deploy/ops.sh`](#operating-the-box--use-deployopssh) — with the user directing rather
+than typing. Handing the user a command to paste is not the default answer: run it, report
+the outcome, and bring them the decision instead of the keystrokes.
+
+**Still check in before acting** on anything destructive, anything that halts trading, and
+anything with an open position at risk. Approval for one action does not carry to the next.
+
+**Fallbacks that remain valid:** manual terminal work when the tooling cannot do the job,
+or when the user prefers it. A few things genuinely require the user — anything with an
+interactive login (`aws sso login`, a browser auth flow) and creating third-party accounts.
+Ask for those explicitly rather than working around them.
+
 ---
 
 ## The box
@@ -46,9 +62,17 @@ Runs under **systemd since 2026-09-19**. `screen` is gone — it could not resta
 process after an OOM kill, which is why one OOM became a four-month outage
 ([incidents.md](incidents.md#2026-05-15--2026-09-19-the-four-month-outage)).
 
+Prefer `ops.sh` — it wraps these with the open-position and post-restart checks:
+
 ```bash
-sudo systemctl status  arb-scanner   # or: ./deploy/ops.sh status
-sudo systemctl restart arb-scanner
+./deploy/ops.sh status | restart | stop | start
+```
+
+Raw equivalents, for when you are already on the box or `ops.sh` cannot run:
+
+```bash
+sudo systemctl status  arb-scanner
+sudo systemctl restart arb-scanner   # abandons any open position — check first
 sudo systemctl stop    arb-scanner
 ```
 
@@ -58,7 +82,8 @@ sudo systemctl stop    arb-scanner
   The logrotate config needs `su ubuntu ubuntu` or it **silently skips** the group-writable
   directory.
 - `arb-scanner-restart.timer` recycles the service daily at **10:00 UTC** to cap the memory
-  leak. Logrotate runs ~00:49 UTC.
+  leak. Logrotate runs ~00:49 UTC. Pause it for a long leak-measurement window with
+  `./deploy/ops.sh timer off`, and **re-enable with `timer on`**.
 - Memory caps: `MemoryHigh=600M`, `MemoryMax=700M`, `OOMPolicy=restart`, `Restart=always`.
   Raised from 550/650 to fit CFB.
 - 1GB swapfile at `/swapfile`, in `/etc/fstab`.
@@ -74,7 +99,7 @@ sudo systemctl daemon-reload
 
 ⚠️ **Never start the scanner by hand.** The service is `enabled` and auto-restarts, so a
 manual `python3 main.py` is a **second executor trading the same Polymarket account
-concurrently**. Check `systemctl is-active arb-scanner` first. Running a dry-run scanner
+concurrently**. Run `./deploy/ops.sh status` first. Running a dry-run scanner
 alongside the live one on 2026-09-19 pushed the live process 264MB into swap — it kept
 trading, with its heap on disk. Restart the service to recover.
 
@@ -142,6 +167,13 @@ regressed.
 ---
 
 ## Health check, in order
+
+```bash
+./deploy/ops.sh status        # all of the below, plus commit + drift + stuck positions
+./deploy/ops.sh heartbeats    # full RSS/lag history across rotated logs
+```
+
+Raw equivalents on the box:
 
 ```bash
 systemctl is-active arb-scanner
@@ -230,15 +262,16 @@ reachability checks `ok` and ~$1/mo billing for the entire four-month outage.
 ## Pulling data
 
 ```bash
-scp -i ~/.ssh/arb-key.pem 'ubuntu@98.82.172.44:~/prediction-arb/*.csv' ~/Documents/prediction-arb/
-scp -i ~/.ssh/arb-key.pem ubuntu@98.82.172.44:~/prediction-arb/scanner.log ~/Documents/prediction-arb/scanner_vps.log
+./deploy/ops.sh pull          # CSVs + log into a dated vps_pull_YYYYMMDD_HHMM/
+./deploy/ops.sh reconcile     # runs reconcile.py on the box
 ```
 
-Local repo-root CSVs are **stale subsets** of `vps_pull_20260919/`. Analyse the pull, not
-the root files — see [performance-log.md](performance-log.md).
+`pull` writes to a **dated directory, never over the repo-root CSVs** — those are stale May
+subsets, and overwriting them would destroy the only local copy of `convergence_log.csv`.
+Analyse the pull, not the root files — see [performance-log.md](performance-log.md).
 
-**After every trading session:** `python3 reconcile.py executions.csv`. `executions.csv` is
-intent, not truth.
+**After every trading session:** `./deploy/ops.sh reconcile`. `executions.csv` is intent,
+not truth.
 
 ---
 
