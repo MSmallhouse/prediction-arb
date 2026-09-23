@@ -73,7 +73,7 @@ class ExecutionConfig:
     min_buy_price: float = 0.15         # skip teams below 15c (likely losing, heading to 0c)
     max_buy_price: float = 1.00         # no upper cap — buying 90c+ teams heading to 100c is profitable
     max_trades: int = 1                 # stop executing after this many completed trades (0 = unlimited)
-    excluded_sports: frozenset = frozenset({"CFB"})  # detect-only sports — arbs logged, never traded
+    excluded_sports: frozenset = frozenset()  # detect-only sports — arbs logged, never traded
     kalshi_velocity_threshold: float = 0.05  # skip if Kalshi yes_ask moved >5c in velocity window
     kalshi_velocity_window_s: float = 2.0    # lookback window for velocity check (seconds)
 
@@ -185,10 +185,18 @@ async def maybe_execute(
     if config.only_kalshi_opener and opener != "kalshi":
         return
 
-    # Detect-only sports: log the arb, never trade it. CFB is here while we
-    # gather data — its price dynamics (7-point scoring swings) have not been
-    # measured against the velocity and price-drop thresholds, which were tuned
-    # on baseball and hockey.
+    # Detect-only sports: log the arb, never trade it. Empty since 2026-09-22,
+    # when CFB was enabled — replay of 130 gated CFB arbs from the 2026-09-19/20
+    # slate put its within-15s convergence at 70.0%, the best of the three
+    # sports (MLB 62.7%, NHL 32.8%) on a median Poly depth of 51 vs NHL's 11.
+    #
+    # Enabled with one question still open: the 5c/2s velocity threshold was
+    # fitted on baseball and hockey, and football scores in 7-point chunks. It
+    # may block every real CFB signal, or fail to block gap risk. That is not
+    # answerable from detect-only logs — `k_vel` is only recorded when a trade
+    # fires — so the first CFB slate IS the measurement. CFB fees are likewise
+    # unverified (no per-sport coefficient exists in the code); the first fill
+    # settles that too. Exposure is capped by `quantity = 1`.
     sport = _sport_from_slug(getattr(opp.poly_market, "event_slug", ""))
     if sport in config.excluded_sports:
         return

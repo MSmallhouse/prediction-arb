@@ -151,3 +151,53 @@ stuck positions.
 Kalshi's "Create API key" dialog accepts an **optional RSA public key**. Supplying one
 means Kalshi never generates or displays a private key — it never leaves the machine.
 Use this flow on every rotation. Details: [operations.md](operations.md#kalshi-api-key-rotation).
+
+---
+
+## Convergence rate is a property of the sport, not of the filter stack
+
+Measured 2026-09-22 by replaying every arb window since the revive through the live gate
+stack (`only_kalshi_opener`, `gross >= 4%`, `buy >= 0.15`, target `entry + 5c` per
+`sell_target_offset`) and asking whether `poly_bid` ever reached target inside the 15s
+timeout. Mislabelling window 2026-09-19 20:32-21:07 UTC excluded.
+
+| Sport | Converges within 15s | Median Poly depth | Median time to converge |
+|---|---|---|---|
+| CFB | **70.5%** (86/122) | 51 | 457ms |
+| MLB | 62.2% (51/82) | 18 | 661ms |
+| NHL | **32.8%** (22/67) | 11 | 4480ms |
+
+Two things this settles:
+
+**The documented 67.9% reproduces — for MLB and CFB.** It was never a whole-system
+constant. NHL runs at half that rate on a third the depth, and its median time to converge
+(4.5s) is 7x MLB's, with p75 at 21.2s — past the 15s timeout entirely.
+
+**This is the dominant P&L term, ahead of fill rate and latency.** Realized results track
+the replay: NHL was 24 of 33 closed trades and −$0.73 of the −$0.94, converging 1/24;
+MLB was 4/9 converged at −$0.21. We were putting 73% of volume into the worst sport.
+
+Note this inverts the standing "fill rate is the bottleneck" thesis. That held while
+per-trade EV was positive. At −2.85c/trade a higher fill rate loses money faster — sport
+mix binds first.
+
+---
+
+## Discovery silently reset two WS-derived fields every hour
+
+`_populate_stores` rebuilds each `PolymarketMarket` from REST on the hourly discovery pass
+and copied only `yes_ask`/`yes_bid` onto the new object. Two fields fell back to their
+dataclass defaults every cycle (fixed 2026-09-22):
+
+- **`yes_ask_size` -> 0.0.** Trips the `min_poly_depth` gate in `executor.py`, blocking
+  every trade on a market until its next WS tick. Fails closed and quiet — the house
+  pattern. Impact was small in practice only because active markets re-tick in ~203ms
+  median; fires are evenly spread across the hour, so it self-healed before it could bite.
+- **`fetched_at` -> now.** Made `poly_ws_age_ms` read *fresh* for a market that had not
+  ticked in an hour. **Every staleness figure measured before 2026-09-22 is a floor, not
+  an age** — including the "median 157ms for fills vs 296ms for non-fills" result that
+  [open-questions.md § WS staleness vs fill rate](open-questions.md#ws-staleness-vs-fill-rate)
+  is built on. Re-measure before trusting it as a gate.
+
+Neither was found by reading the tick path, which is correct. Both are in the *discovery*
+path, which only runs hourly and leaves no log line when it clobbers live state.

@@ -514,6 +514,18 @@ def _populate_stores(
             m.yes_ask = existing.yes_ask
             if existing.yes_bid > 0:
                 m.yes_bid = existing.yes_bid
+            # Carry the WS-derived fields too. Both default on a fresh object
+            # (`yes_ask_size` to 0.0, `fetched_at` to now), and discovery builds
+            # a NEW object every hour, so not copying them silently rewrote
+            # live state once an hour:
+            #   - yes_ask_size -> 0 trips the `min_poly_depth` gate in
+            #     executor.py, blocking every trade on a market until its next
+            #     WS tick. Fails closed and quiet, the house pattern.
+            #   - fetched_at -> now makes poly_ws_age_ms read fresh for a
+            #     market that has not ticked in an hour, so the staleness
+            #     number every analysis leans on was a floor, not an age.
+            m.yes_ask_size = existing.yes_ask_size
+            m.fetched_at = existing.fetched_at
         poly_by_token[m.token_id] = m
 
     # Prune stale markets

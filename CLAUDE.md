@@ -57,21 +57,33 @@ the full filter stack). **Fill rate is the bottleneck** — 52.6% of 4%+ arbs cl
 - **`quantity` cannot rise above 1** until the maker-sell/taker-exit scaling bug is fixed.
   → [docs/open-questions.md](docs/open-questions.md#known-unfixed-bug-quantity-scaling)
 - **`rss` in the heartbeat is a lower bound, not memory.** `VmRSS` excludes swapped-out
-  pages, and `MemoryHigh=600M` guarantees swapping starts before memguard's 500MB
-  threshold. A flat RSS curve can mean memory is growing into swap — it OOM-killed us at
-  ~1.6GB with RSS reading 368MB. Read `VmSwap` too.
+  pages, so a flat RSS curve can mean memory is growing into swap. memguard now reads
+  `VmRSS + VmSwap` (fixed 2026-09-22, after it sat at "no action" through a second OOM
+  kill), but **the heartbeat still reports RSS alone.** Every systemd metric is blind
+  here too: at the 2026-09-22 kill `MemoryCurrent` read 431MB and `MemoryPeak` 579MB,
+  both under `MemoryMax=700M`, while swap was 961MB and anon was 1375MB — **it dies of
+  swap exhaustion, not the cgroup cap.**
   → [docs/incidents.md](docs/incidents.md#2026-09-20-2050-utc-oom-kill-that-memguard-could-not-see)
-- **CFB is detect-only** (`excluded_sports = {"CFB"}`) — thresholds were fitted on baseball
-  and hockey.
+- **CFB is tradeable as of 2026-09-22** (`excluded_sports` is now empty). Enabled on a
+  70.5% within-15s convergence replay vs NHL's 32.8%. The velocity threshold is still
+  unvalidated for football — the first Saturday slate is the measurement, not a rollout.
+  → [docs/open-questions.md](docs/open-questions.md#is-cfb-tradeable)
 
-## Current state (2026-09-20)
+## Current state (2026-09-22)
 
-Live on AWS EC2 t3.micro under systemd, trading MLB + NHL, detecting CFB. Revived
-2026-09-19 after a 127-day outage caused by four independent silent breakages. OOM-killed
-and auto-restarted 2026-09-20 20:50 UTC, 19h into the leak measurement window. Net P&L over
-the last measured window (2026-05-12→15, n=33 closed trades) is **−$0.97**, dominated by
-six gap losses; converged exits are 8/8 profitable. Exits logged before 2026-05-14 were
-not fill-verified, so that figure is an upper bound.
+Live on AWS EC2 t3.micro under systemd, trading MLB + NHL + **CFB** (enabled 2026-09-22).
+Revived 2026-09-19 after a 127-day outage caused by four independent silent breakages.
+OOM-killed twice since — 2026-09-20 20:50 and 2026-09-22 06:30 UTC.
+
+Net P&L since the revive is **−$0.94** over n=33 closed trades (**−2.85c/trade**). The
+loss is one sport: NHL is 24 of those 33 trades and −$0.73 of the loss, converging 1/24.
+MLB is 4/9 converged, −$0.21. Converged exits remain the only profitable path (5/5);
+timeouts are 2/25 and price-drops 0/3.
+
+**The thesis line above is out of date.** "Fill rate is the bottleneck" held while EV was
+positive. At −2.85c/trade a better fill rate loses money faster. The binding problem is
+sport mix: within-15s convergence is 70.5% for CFB, 62.2% for MLB and **32.8% for NHL**,
+and we put 73% of volume into NHL.
 
 Highest-leverage open items: the memory leak's true source, event-loop lag at 32-72ms, and
 whether the velocity filter generalises. All three are **blocked on elapsed runtime, not

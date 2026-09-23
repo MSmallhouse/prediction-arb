@@ -60,13 +60,26 @@ subscription with no Kalshi counterpart to arb against.
 
 ### Detect-only
 
-CFB arbs are logged but **never traded** — `executor.config.excluded_sports = {"CFB"}`.
-The velocity and price-drop thresholds were fitted on baseball and hockey, and football
-scores in 7-point chunks. Unvalidated here. See
-[open-questions.md § Is CFB tradeable?](open-questions.md#is-cfb-tradeable).
+**Ended 2026-09-22.** `excluded_sports` is now empty and CFB trades like any other sport.
 
-Enable execution by removing `"CFB"` from `excluded_sports` — but only after the two
-questions in that section are answered.
+The trigger was a replay of the 2026-09-19/20 slate through the live gate stack (kalshi
+opener, gross >= 4%, buy >= 0.15, target entry+5c). CFB came out **best of the three
+sports** on every measure:
+
+| Sport | Converges within 15s | Median Poly depth | Median time to converge |
+|---|---|---|---|
+| CFB | **70.5%** (86/122) | **51** | 457ms |
+| MLB | 62.2% (51/82) | 18 | 661ms |
+| NHL | 32.8% (22/67) | 11 | 4480ms |
+
+(The 2026-09-19 20:32-21:07 UTC mislabelling window is excluded; including it moves CFB
+70.5→70.0% and MLB 62.2→62.7%, so it changes nothing.)
+
+⚠️ **One gating question was NOT answered before enabling.** The 5c/2s velocity threshold
+is still fitted on baseball and hockey. It is not answerable from detect-only logs —
+`k_vel` is only recorded when a trade actually fires — so the first CFB slate *is* the
+experiment. CFB fees are likewise unverified (see below). Exposure is capped at
+`quantity = 1`. Treat the first Saturday's CFB rows as a measurement, not as P&L.
 
 ### Capacity — the binding constraint
 

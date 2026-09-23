@@ -134,18 +134,36 @@ identical to a quiet market (the third silent failure of 2026-09-19).
 
 ## Is CFB tradeable?
 
-Opened 2026-09-19; currently detect-only
-([sports.md § Detect-only](sports.md#detect-only)). Two things to learn before enabling:
+Opened 2026-09-19. **Enabled for trading 2026-09-22** on (a); (b) is still open and is
+now being measured live.
 
-**(a) Arb frequency.** CFB arbs *do* appear — `CENCON @ MONST gross=5.0%`,
-`YALE @ HOLY gross=4.0%` on 2026-09-19 ~21:00 UTC. The earlier "zero CFB arbs in 7 minutes"
-was simply too short a sample. **Protocol:** count `,CFB,` rows in `arb_durations_4.csv`
-over a full Saturday slate.
+**(a) Arb frequency — ANSWERED, decisively.** The 2026-09-19/20 slate produced **2,006 CFB
+arbs, 1,090 of them at 4%+**, 1,202 on the Saturday alone. More per-day than MLB. Frequency
+was never the constraint. Junk arbs against near-zero books are also a non-issue: only
+89 of 2,006 (4.4%) had `poly_ask < 0.15`, so `min_buy_price` is doing its job.
 
-**(b) Velocity threshold.** 5c/2s was fitted to baseball and hockey tick sizes. A touchdown
-moves a football line far more than 5c in 2s, so the filter may block **every** real CFB
-signal, or fail to block gap risk. **Protocol:** compare `k_vel=` values on CFB arbs
-against their subsequent price paths before trusting it.
+Replaying those arbs through the live gate stack put CFB **first** of the three sports on
+within-15s convergence (70.5%), median Poly depth (51) and time-to-converge (457ms) —
+table in [sports.md](sports.md#detect-only). That is what justified enabling it.
+
+**(b) Velocity threshold — STILL OPEN, and not answerable offline.** 5c/2s was fitted to
+baseball and hockey tick sizes. A touchdown moves a football line far more than 5c in 2s,
+so the filter may block **every** real CFB signal, or fail to block gap risk.
+
+The original protocol — compare `k_vel=` on CFB arbs against their price paths — **cannot
+be run**: `k_vel` is computed inside `_should_execute` and only ever written on a trade,
+so detect-only CFB produced zero velocity samples in four days of logging. This is why CFB
+was enabled with (b) unanswered: firing is the only way to collect the data.
+
+**Protocol now:** on the first CFB slate, check (1) attempts > 0 at all — if the velocity
+filter blocks everything, CFB arbs will appear with zero attempts, and the
+`arbs at 4%+ but zero execution attempts` health check should catch it; (2) the
+`SELL_PRICE_DROP` share for CFB vs MLB/NHL — a fatter gap tail is the failure mode that
+high convergence would hide. Exposure is `quantity = 1`.
+
+**Also unresolved and settled by the same slate:** CFB fees. No per-sport fee coefficient
+exists in the code, so CFB currently prices with the generic Polymarket model
+([sports.md § CFB fees](sports.md#cfb-fees)). The first CFB fill is the check.
 
 Also check for **junk arbs against near-zero books** — many CFB books (especially FCS) sit
 at 0.01/0.00 once a game is decided. `min_buy_price = 0.15` filters most, but verify.
