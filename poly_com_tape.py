@@ -214,6 +214,13 @@ async def record(tokens: dict[str, dict], out: Path, minutes: float) -> None:
         writer = csv.DictWriter(fh, fieldnames=FIELDS)
         if new_file:
             writer.writeheader()
+            fh.flush()
+        # Flush on a TIMER, not a row count. A row-count flush starves at low
+        # event rates — a quiet slate wrote 0 bytes for minutes because nothing
+        # reached the 2000-row mark, which reads from outside exactly like a
+        # collector that is silently broken.
+        last_flush = time.monotonic()
+        last_report = time.monotonic()
 
         while time.monotonic() < deadline:
             try:
@@ -259,8 +266,16 @@ async def record(tokens: dict[str, dict], out: Path, minutes: float) -> None:
                                 "ask_size": f"{as_:.2f}",
                             })
                             rows += 1
-                        if rows % 2000 < len(msgs):
+                        now_m = time.monotonic()
+                        if now_m - last_flush >= 10.0:
                             fh.flush()
+                            last_flush = now_m
+                        if now_m - last_report >= 60.0:
+                            log.info(
+                                "%d rows | %.0f min left | events %s",
+                                rows, (deadline - now_m) / 60, dict(counts),
+                            )
+                            last_report = now_m
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
