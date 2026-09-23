@@ -55,7 +55,12 @@ UA = {
 }
 
 FIELDS = [
-    "ts_utc",          # ISO8601 with ms — the join key against convergence_log
+    "ts_utc",          # OUR receive time, ISO8601 with ms
+    "exch_ts",         # EXCHANGE timestamp (ms epoch) where the event carries one.
+                       # Prefer this for lead/lag: it removes our own network
+                       # latency from the measurement, which is precisely the
+                       # confound that makes the Kalshi `opener` field untrustworthy
+                       # (docs/open-questions.md).
     "recv_monotonic",  # monotonic seconds since start, for ordering within this tape
     "slug",
     "sport",
@@ -177,9 +182,41 @@ def resolve_tokens(games, max_games: int) -> dict[str, dict]:
     return tokens
 
 
-def _levels(event: dict) -> tuple[float | None, float | None, float, float]:
-    """(best_bid, best_ask, bid_size, ask_size) from a book snapshot or a delta."""
+def _quotes(event: dict):
+    """
+    Yield (token_id, best_bid, best_ask, bid_size, ask_size, exch_ts) per event.
+
+    A `price_change` event has NO top-level asset_id. It carries a `price_changes`
+    ARRAY, one entry per token, each with its own asset_id/best_bid/best_ask, plus
+    a top-level exchange `timestamp`. The first version of this collector looked
+    for a top-level id, found none, and silently dropped every price_change — 3
+    hours of recording produced book snapshots only, a median quote age of 11s,
+    and a dataset far too coarse to resolve the sub-second lead this exists to
+    measure. It looked exactly like a quiet feed. Fails closed and quiet, again.
+    """
     et = event.get("event_type")
+    exch = event.get("timestamp") or ""
+
+    if et == "price_change":
+        for ch in event.get("price_changes") or []:
+            tid = ch.get("asset_id")
+            if not tid:
+                continue
+            bb, ba = ch.get("best_bid"), ch.get("best_ask")
+            yield (
+                tid,
+                float(bb) if bb is not None else None,
+                float(ba) if ba is not None else None,
+                0.0,
+                0.0,
+                exch,
+            )
+        return
+
+    tid = event.get("asset_id") or event.get("token_id")
+    if not tid:
+        return
+
     if et == "book":
         bids, asks = event.get("bids") or [], event.get("asks") or []
         bb = ba = None
@@ -190,14 +227,19 @@ def _levels(event: dict) -> tuple[float | None, float | None, float, float]:
         if asks:
             top = min(asks, key=lambda x: float(x["price"]))
             ba, as_ = float(top["price"]), float(top.get("size", 0) or 0)
-        return bb, ba, bs, as_
-    bb = event.get("best_bid")
-    ba = event.get("best_ask")
-    return (
+        yield tid, bb, ba, bs, as_, exch
+        return
+
+    bb, ba = event.get("best_bid"), event.get("best_ask")
+    if bb is None and ba is None:
+        return
+    yield (
+        tid,
         float(bb) if bb is not None else None,
         float(ba) if ba is not None else None,
         0.0,
         0.0,
+        exch,
     )
 
 
@@ -243,17 +285,18 @@ async def record(tokens: dict[str, dict], out: Path, minutes: float) -> None:
                         for ev in msgs:
                             if not isinstance(ev, dict):
                                 continue
-                            tid = ev.get("asset_id") or ev.get("token_id")
-                            meta = tokens.get(tid)
-                            if meta is None:
-                                continue
                             et = ev.get("event_type", "?")
                             counts[et] += 1
-                            bb, ba, bs, as_ = _levels(ev)
-                            if bb is None and ba is None:
-                                continue
-                            writer.writerow({
+                            for tid, bb, ba, bs, as_, exch in _quotes(ev):
+                                meta = tokens.get(tid)
+                                if meta is None:
+                                    continue
+                                if bb is None and ba is None:
+                                    continue
+                                counts[f"{et}:kept"] += 1
+                                writer.writerow({
                                 "ts_utc": now.isoformat(timespec="milliseconds"),
+                                "exch_ts": exch,
                                 "recv_monotonic": f"{mono:.4f}",
                                 "slug": meta["slug"],
                                 "sport": meta["sport"],
@@ -264,8 +307,8 @@ async def record(tokens: dict[str, dict], out: Path, minutes: float) -> None:
                                 "best_ask": "" if ba is None else f"{ba:.4f}",
                                 "bid_size": f"{bs:.2f}",
                                 "ask_size": f"{as_:.2f}",
-                            })
-                            rows += 1
+                                })
+                                rows += 1
                         now_m = time.monotonic()
                         if now_m - last_flush >= 10.0:
                             fh.flush()
