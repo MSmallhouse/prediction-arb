@@ -397,3 +397,30 @@ UTC — all false positives from quiet pre-game hours, each one its own email
 at `quantity=1` — the known taker race, not a new fault. Buying power on reconnect:
 **$108.27** (2026-09-20 20:50Z), up from the ~$70 quoted elsewhere in these docs.
 
+
+---
+
+## Measurement window opened 2026-09-23 00:11 UTC
+
+Deployed commit `9846e13`. Restart verified: `K: 170/170 confirmed, P: 160/160 confirmed`,
+RSS back to a 139MB baseline from 476MB. This window measures three things at once, which
+is deliberate — each deploy resets the leak clock, so they are batched:
+
+1. **CFB's first traded slate** (Saturday 2026-09-26). Watch for CFB attempts > 0 at all —
+   zero attempts means the velocity filter blocks every football signal — and compare the
+   `SELL_PRICE_DROP` share for CFB against MLB/NHL. A fatter gap tail is the failure mode
+   that a 70.5% convergence rate would hide.
+2. **Memory, with a guard that can now see swap.** memguard trips at 900MB anon. Live anon
+   was ~830MB before the restart, so the previous process would have been restarted almost
+   immediately; from a 139MB baseline at ~40MB/h, expect the first graceful restart around
+   +19h if the leak rate holds. **A memguard restart is now the expected end of a window,
+   not an incident.**
+3. **Honest `poly_ws_age_ms`.** `fetched_at` now survives discovery, so from this commit
+   onward the number is an age rather than a floor. Do not pool it with earlier data.
+
+⚠️ One pre-existing alert is worth chasing separately, and predates this deploy:
+`23:14:52 HEALTH ALERT: 28 arbs at 4%+ but zero execution attempts — a filter is blocking
+everything`. The `yes_ask_size` reset fixed in `9846e13` is a candidate cause (it zeroes
+the depth gate input for every market once an hour) but this is **unconfirmed** — the
+alert fired at 23:14 and discovery runs at :30, which does not line up cleanly. If it
+recurs after this deploy, the cause is something else.
