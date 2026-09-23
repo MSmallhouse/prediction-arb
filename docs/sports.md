@@ -142,12 +142,32 @@ Re-measured on n=1098 closed 4%+ arbs (2026-04-30 → 05-15):
 | Share closing <85ms | 49.2% | 69.4% | 56.6% |
 | n | 652 | 36 | 410 |
 
-Two corrections that matter operationally:
+Re-measured again on n=1964 closed 4%+ arbs (2026-09-19 → 22), now including CFB:
+
+| Metric (n=1964, 2026-09) | MLB | NHL | CFB |
+|---|---|---|---|
+| Median arb duration | 34 ms | 28 ms | 40 ms |
+| Share closing <85ms | 72.5% | 69.4% | 77.2% |
+| **Converges within 15s** | 62.2% | **32.8%** | **70.5%** |
+| Median Poly book depth | 18 | 11 | **51** |
+| n (4%+) | 839 | 581 | 544 |
+
+**This is the table that should drive sport decisions.** Arbs across the board are much
+faster than the May baseline (72.9% under 85ms vs 52.6%), and convergence — the thing that
+actually pays — varies more than 2x across sports. CFB leads on every column; NHL trails on
+every column. → [findings-validated.md](findings-validated.md#convergence-rate-is-a-property-of-the-sport-not-of-the-filter-stack)
+
+Three corrections that matter operationally:
 
 - **MLB's Kalshi-opener share is ~50%, not 77%**, and swings from 31.6% to 100% day to
   day. Since `only_kalshi_opener=True` gates every trade, the filter is discarding about
   half of MLB arbs on an unstable signal. (The filter still has real predictive value —
   52.6% vs 15.0% convergence hit rate — but the headline rate was wrong.)
+- **NHL is the worst sport we trade, and it took 73% of our volume** through 2026-09-22.
+  32.8% within-15s convergence, the thinnest books, and a median time-to-converge of
+  4480ms (p75 21.2s — past the 15s timeout). Realised: 1-of-24 converged, −$0.73 of a
+  −$0.94 total. Deliberately left tradeable as of 2026-09-22 to keep collecting data, not
+  because it is expected to profit.
 - **NHL's arb counts are inflated by pre-game markets.** `minutes_to_first_pitch` has a
   median of +3.3 days for NHL and only 10 distinct `game_datetime` values; just 31.7% of
   NHL 4%+ arbs are at or after puck drop. NHL produced 410 detections but only 11 execution

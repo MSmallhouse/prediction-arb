@@ -26,9 +26,13 @@ Kalshi and Polymarket US price the same game differently for tens to hundreds of
 milliseconds. We detect the gap and trade **one leg only**: buy the cheap side on
 Polymarket, sell into the convergence. The arb is the entry trigger, not the position.
 
-Signal quality is validated (77% counterfactual win rate, 67.9% convergence hit rate under
-the full filter stack). **Fill rate is the bottleneck** — 52.6% of 4%+ arbs close in under
-85ms, faster than our fastest round trip.
+Signal quality is real but **sport-dependent**, which the old single-number framing hid:
+within-15s convergence is 70.5% for CFB, 62.2% for MLB and **32.8% for NHL** (replay,
+2026-09-22). The often-quoted 67.9% is the MLB/CFB figure, not a system constant.
+
+**The bottleneck is sport mix, not fill rate.** "Fill rate is the bottleneck" held while
+per-trade EV was positive; at −2.85c/trade a better fill rate loses money faster. Fixing
+which sports we trade comes first. → [docs/findings-validated.md](docs/findings-validated.md#convergence-rate-is-a-property-of-the-sport-not-of-the-filter-stack)
 
 ## Invariants — violating any of these has cost real money
 
@@ -69,27 +73,25 @@ the full filter stack). **Fill rate is the bottleneck** — 52.6% of 4%+ arbs cl
   unvalidated for football — the first Saturday slate is the measurement, not a rollout.
   → [docs/open-questions.md](docs/open-questions.md#is-cfb-tradeable)
 
-## Current state (2026-09-22)
+## Current state (2026-09-23)
 
-Live on AWS EC2 t3.micro under systemd, trading MLB + NHL + **CFB** (enabled 2026-09-22).
-Revived 2026-09-19 after a 127-day outage caused by four independent silent breakages.
-OOM-killed twice since — 2026-09-20 20:50 and 2026-09-22 06:30 UTC.
+Live on AWS EC2 t3.micro under systemd, trading MLB + NHL + **CFB** (CFB enabled
+2026-09-22, commit `9846e13`, first slate Saturday 2026-09-26). Revived 2026-09-19 after a
+127-day outage caused by four independent silent breakages. OOM-killed twice since —
+2026-09-20 20:50 and 2026-09-22 06:30 UTC.
 
 Net P&L since the revive is **−$0.94** over n=33 closed trades (**−2.85c/trade**). The
-loss is one sport: NHL is 24 of those 33 trades and −$0.73 of the loss, converging 1/24.
-MLB is 4/9 converged, −$0.21. Converged exits remain the only profitable path (5/5);
-timeouts are 2/25 and price-drops 0/3.
+loss is concentrated in one sport: NHL is 24 of those 33 trades and −$0.73 of the loss,
+converging 1/24. MLB is 4/9 converged, −$0.21. Converged exits remain the only profitable
+path (5/5); timeouts are 2/25 and price-drops 0/3. **NHL was deliberately left tradeable**
+to keep collecting on the worst sport rather than to make money on it.
 
-**The thesis line above is out of date.** "Fill rate is the bottleneck" held while EV was
-positive. At −2.85c/trade a better fill rate loses money faster. The binding problem is
-sport mix: within-15s convergence is 70.5% for CFB, 62.2% for MLB and **32.8% for NHL**,
-and we put 73% of volume into NHL.
-
-Highest-leverage open items: the memory leak's true source, event-loop lag at 32-72ms, and
-whether the velocity filter generalises. All three are **blocked on elapsed runtime, not
-work** — the leak protocol alone needs 72h uninterrupted, and our own deploys reset it.
-Batch changes while a measurement window is open. See
-[docs/open-questions.md](docs/open-questions.md).
+Highest-leverage open items: whether CFB's convergence edge survives contact with real
+fills, the memory leak's true source, and event-loop lag. All are **blocked on elapsed
+runtime, not work** — and our own deploys reset the clock, so batch changes while a
+measurement window is open. See [docs/open-questions.md](docs/open-questions.md) and the
+open window in
+[docs/performance-log.md](docs/performance-log.md#measurement-window-opened-2026-09-23-0011-utc).
 
 ## Operating model
 

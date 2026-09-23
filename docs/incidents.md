@@ -240,6 +240,52 @@ truncated at 19h and restarted 20:50:49 UTC.
 
 ---
 
+## 2026-09-22 06:30 UTC: second OOM kill, and what it corrected
+
+The process died again 32.6h into the window that started after the 2026-09-20 kill. The
+out-of-process sampler (`deploy/arb-memsample.sh`, added between the two) caught the whole
+curve this time, which turned a hypothesis into a measurement.
+
+**It is a linear leak, not a discovery spike.** Two independent processes, same slope:
+
+| PID | Window | Anon at start → end | Rate |
+|---|---|---|---|
+| 455428 | 32.6h | 138MB → **1376MB** | 38.0 MB/h |
+| 472652 | 16.8h | 164MB → 850MB | 40.9 MB/h |
+
+⚠️ **This corrects the 2026-09-20 post-mortem above**, which attributed the kill to a
+Sunday-evening discovery allocation burst on top of an elevated baseline. That framing is
+wrong, or at best incomplete: the growth is steady, straight, and present on a Monday with
+no CFB slate. Discovery transients are real but they ride on top of a leak that reaches the
+kill point on its own. **Item 3 of that entry — that discarding CFB markets during the JSON
+parse is "the direct fix" — does not follow.** It remains a good latency/capacity change;
+it is not the memory fix.
+
+**Nothing in systemd can see this.** At the kill: `MemoryCurrent` 431MB, `MemoryPeak`
+579MB — both comfortably under `MemoryMax=700M` — while `MemorySwapCurrent` was 961MB and
+process anon was 1375MB. **The process dies of swap exhaustion, not the cgroup cap.**
+`MemoryPeak` is especially misleading: it tracks `memory.current`, so it never rises.
+
+**memguard could not have fired, and not only because of the metric.** It read RSS alone,
+*and* zeroed its breach counter on any dip. Once swapping pinned RSS oscillating either
+side of the 500MB line, the two-consecutive-breach rule became unreachable: the log shows
+`1/2` at 18:00 and again at 20:00 on 2026-09-22, reset both times, while true anon was
+850MB and climbing. A guard that needs two consecutive samples above a line the kernel is
+actively holding it below cannot fire **by construction**.
+
+**Fixed in `9846e13`** — reads `VmRSS + VmSwap`, decays the counter by one instead of
+zeroing, trips at 900MB anon (~11h of headroom at the measured rate below the ~1375MB kill
+point). The heartbeat still reports RSS alone; that remains open.
+
+**Consequences.** SIGKILL again, so queued CSV rows were lost. No position open. The leak
+measurement window was truncated at 32.6h — the second window in a row to die before the
+72h the protocol needs.
+
+**Still unknown:** the leak's source. Two clean measurements of the *rate* do not locate
+it. → [open-questions.md](open-questions.md)
+
+---
+
 ## The silent-failure pattern
 
 Six distinct failures, three of them found on a single day. Every one of them:

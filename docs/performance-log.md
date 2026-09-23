@@ -29,6 +29,20 @@ These traps have each corrupted an analysis at least once:
    appended live). A default `pd.read_csv` **silently discards 34 of 57 rows**. Read with
    explicit 22-column names.
 5. All three CSVs join on `arb_id` = the `first_seen` ISO timestamp.
+6. **`convergence_log.csv` starts recording when an arb OPENS, not before.** Its
+   `t_offset_ms` is measured from the arb's first_seen, so the file contains **nothing
+   about the market before that instant**. This is a trap when reasoning about entry: the
+   executor fires at `t_offset ≈ 0`, so "zero Poly ticks before the fire" is true of every
+   single trade by construction and says nothing about whether the feed was live. It cost
+   an analysis on 2026-09-22 — the absence was read as evidence of a stale-object bug that
+   did not exist. To ask anything about pre-entry freshness, use `poly_ws_age_ms` in
+   `executions.csv` (and only from `9846e13` onward, when it became an age rather than a
+   floor).
+7. **A high-volume `game` label can be one market, not many.** `EDM @ WPG` produced 157 of
+   327 zero-tick arb windows over three days — longer than a hockey game lasts. It was a
+   single dead book: `poly_ask` frozen at 0.4300 for 639 of 663 rows and `poly_depth = 0`
+   on 479 of them. Check `poly_depth` and price variance before treating a game as a
+   signal source; the depth gate already blocks these from trading.
 
 ---
 
@@ -130,11 +144,23 @@ P&L by sport: MLB −$0.8426 (n=28), NBA −$0.0845 (n=2), NHL −$0.0473 (n=3).
 
 ### WS staleness at fire time
 
+🚨 **These Polymarket numbers were measured on a broken metric. Do not use them.**
+Until 2026-09-22, `_populate_stores` reset `fetched_at` to "now" on every hourly discovery
+pass, so `poly_ws_age_ms` read *fresh* for a market that had not ticked in an hour. Every
+Poly staleness figure below — and anywhere else in these docs before that date — is a
+**floor, not an age**. Fixed in `9846e13`; re-measure before drawing any conclusion.
+→ [findings-validated.md](findings-validated.md#discovery-silently-reset-two-ws-derived-fields-every-hour)
+
 **Kalshi WS age is 1ms at every quartile** for both fills and non-fills (max 3ms) — the
-Kalshi feed is never stale. Polymarket is: **median 157ms for fills vs 296ms for
-non-fills**, non-fill max 159 seconds. This is the one staleness signal in the data that
-correlates with outcome. (It is ambiguous causally: stale *may* mean quiet rather than
-wrong — BUF@MON won with a 71s-stale price.)
+Kalshi feed is never stale, and that part stands (Kalshi objects are rebuilt by the same
+code path, but Kalshi ticks constantly enough that the reset never showed). Polymarket
+was recorded as median 157ms for fills vs 296ms for non-fills, non-fill max 159 seconds.
+
+For scale on how wrong the floor can be: over 2026-09-19→22 the *same broken metric*
+read a median of 1471ms at fire (excluding >60s outliers), with fills at 4194ms and
+non-fills at 3740ms — the fills/non-fills ordering is now **reversed** from the figures
+above. Whether that is a real regime change or an artefact of the reset is unknown until
+a clean window exists.
 
 Error column: `ORDER_STATE_EXPIRED` 76, `WS_TIMEOUT_NO_POSITION` 2, blank 66.
 
@@ -164,6 +190,22 @@ Excluding the 81 arbs that lasted >60s, medians tighten: MLB 0.074s (n=605), NHL
 
 Overall median 0.073s. **52.6% of 4%+ arbs close in under 85ms** — faster than our fastest
 round trip. That is the structural taker ceiling.
+
+⚠️ **Superseded — arbs got faster.** Re-measured over 2026-09-19→22 (n=1964 4%+ CLOSE
+rows), the share closing under 85ms is **72.9%**, not 52.6%, and the median is **36ms**,
+not 73ms. The ceiling is higher than every doc that quotes 52.6% assumes.
+
+| Sport | n | Median | <85ms | <150ms | <500ms |
+|---|---|---|---|---|---|
+| MLB | 839 | 34ms | 72.5% | 80.9% | 83.3% |
+| NHL | 581 | 28ms | 69.4% | 78.1% | 83.5% |
+| CFB | 544 | 40ms | 77.2% | 93.9% | 98.0% |
+| **All** | **1964** | **36ms** | **72.9%** | **83.7%** | **87.4%** |
+
+Measured against a median buy latency of **134ms** (n=33 fills) — so the median 4%+ arb is
+gone roughly 100ms before our order can land, and **59% of attempts expire**
+(47 `ORDER_STATE_EXPIRED` of 80). CFB is both the slowest-closing and the deepest book,
+which is consistent with it being the most tradeable of the three.
 
 Thinner arbs are **not** faster: the 3-4% band (n=1550 CLOSE) has 46.8% under 85ms, median
 0.065s MLB / 0.088s NHL.

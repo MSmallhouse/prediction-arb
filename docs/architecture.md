@@ -75,7 +75,14 @@ site is commented out), the gamma/CLOB half of `scrapers/polymarket.py`,
 6. If CFB tickers exist: `discover_cfb_markets` over `[now−6h, now+lookahead+6h]` →
    `_join_cfb()` (team pair + kickoff ≤ `CFB_JOIN_MAX_HOURS`) → `register_cfb_slug_map()`.
 7. `_us_markets_to_poly_markets` (two synthetic tokens per game) → `_populate_stores`
-   (preserves live WS prices, prunes stale) → `_rebuild_indexes`.
+   (preserves live WS state, prunes stale) → `_rebuild_indexes`.
+   ⚠️ **`_populate_stores` replaces every market object with a fresh one built from REST,
+   so anything the WS wrote must be explicitly copied across or it silently reverts to a
+   dataclass default once an hour.** It carries `yes_ask`, `yes_bid`, `yes_ask_size` and
+   `fetched_at`; the last two were added in `9846e13` after their absence zeroed the depth
+   gate and falsified `poly_ws_age_ms` for four months.
+   → [findings-validated.md](findings-validated.md#discovery-silently-reset-two-ws-derived-fields-every-hour)
+   **Add a field to `PolymarketMarket` or `KalshiMarket` and you must add it here too.**
 8. Unsubscribe stale tickers/slugs. First pass launches the three WS tasks and starts the
    30s warmup; later passes subscribe dynamically and run a full `_check_arbs()`.
 9. Sleep 3600s. Any exception in steps 2 or 4-6 → log, sleep 300s, retry.

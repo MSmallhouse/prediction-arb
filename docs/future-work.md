@@ -7,9 +7,11 @@ live in [findings-rejected.md](findings-rejected.md) — check there before addi
 
 ## 1. Pre-placed maker bids — the only structural fix
 
-**The ceiling:** 52.6% of 4%+ arbs close in under 85ms, faster than our fastest VPS→Poly
-round trip (fill median 74ms). No amount of latency work catches them as a taker. The
-strategy is taker-bound by construction.
+**The ceiling:** **72.9%** of 4%+ arbs close in under 85ms (n=1964, 2026-09-19→22;
+re-measured — the long-quoted 52.6% understated it). Median arb life is **36ms** against a
+median buy latency of **134ms**, and 59% of our attempts expire. No amount of latency work
+catches them as a taker. The strategy is taker-bound by construction, and more so than
+this section originally claimed.
 
 **The idea:** rest maker bids on Polymarket at expected entry prices for active games.
 When the arb opens, we are already in the book — no race at all. This is a shift from
@@ -23,7 +25,11 @@ taker to maker, which also takes the Polymarket fee to zero.
 - Cancel/replace logic and its rate-limit budget.
 - Order state must stay coherent with `_in_flight` and the private order WS.
 
-**Why it is #1:** everything else optimizes a path with a hard 52.6% loss rate baked in.
+**Why it is #1 — with one caveat added 2026-09-22:** everything else optimizes a path with
+a hard ~73% loss rate baked in. The caveat is that per-trade EV is currently **negative**
+(−2.85c over n=33), so a higher fill rate would lose money faster, not slower. Sport mix
+([findings-validated.md](findings-validated.md#convergence-rate-is-a-property-of-the-sport-not-of-the-filter-stack))
+has to be fixed before winning more races is worth anything.
 
 ---
 
@@ -172,6 +178,20 @@ It trains the operator to ignore the channel that exists to catch
 [the silent-failure pattern](incidents.md#the-silent-failure-pattern).
 
 ### 7c. memguard and the heartbeat are blind to swap
+
+✅ **Item 1 shipped for memguard in `9846e13` (2026-09-22)** — it now thresholds on
+`VmRSS + VmSwap` at 900MB and decays its breach counter instead of zeroing it (the reset
+was a second, independent reason it could never fire; see
+[incidents.md](incidents.md#2026-09-22-0630-utc-second-oom-kill-and-what-it-corrected)).
+**The heartbeat half of item 1 is NOT done** — `main._rss_mb()` still logs RSS alone, so
+every `rss` figure in the heartbeat and in these docs remains a lower bound. Items 2 and 3
+are untouched.
+
+⚠️ **The premise below is partly superseded.** A second kill on 2026-09-22 measured the
+growth as a **linear ~40MB/h leak across two independent processes**, not a discovery
+spike — so item 3 ("react faster than hourly") is much less urgent than it looked: an
+hourly check has ~11h of headroom against a steady climb. Item 2 (`MemorySwapMax`) is
+correspondingly *more* attractive, since swap is what stretches the death out to 1.4GB.
 
 Established by the OOM kill on
 [2026-09-20 20:50 UTC](incidents.md#2026-09-20-2050-utc-oom-kill-that-memguard-could-not-see):

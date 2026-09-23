@@ -12,8 +12,9 @@ entry records **what would have to change** for it to be worth revisiting.
 `gc N cols max NNms tot NNms` next to `loop lag max`.
 
 **Baseline (2026-09-19):** startup/discovery windows show **12-13 collections, 755-898ms
-max pause**, ~2000ms total. Median arb life is 85ms, so a single collection can sleep
-through several opportunity windows. **Steady state shows ZERO collections** yet still
+max pause**, ~2000ms total. Median arb life is **36ms** (re-measured 2026-09-22; this line
+previously said 85ms), so a single collection can sleep through dozens of opportunity
+windows, not several. **Steady state shows ZERO collections** yet still
 ~42ms loop lag — so steady-state lag is *not* GC.
 
 | Attempt | Result |

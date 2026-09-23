@@ -179,13 +179,29 @@ Convergence re-analysis (n=154 successful +5c touches) gives a **median time to 
 of 4256ms but a p75 of 11.3s**. At a 15s cutoff we are trimming close to the tail of the
 winning distribution.
 
-**Why it matters:** timeout exits are 5 W / 14 L and bleed −$0.48. Some of those may be
-winners cut off early rather than genuine losers.
+**Why it matters:** timeout exits are 5 W / 14 L and bleed −$0.48 (2026-05 window); over
+2026-09-19→22 they are 2 W / 23 L and −$0.82. Some of those may be winners cut off early
+rather than genuine losers.
 
-**Protocol:** re-run the convergence simulation at 15s / 20s / 30s / 45s horizons and
-compare hit rate against the adverse price drift over the extra hold time. This is a pure
-data question — no live trading needed. Caveat: entry price in the simulation is the logged
-`poly_ask` at t=0, not an actual fill.
+⚠️ **Conflicting evidence, 2026-09-22 — both sides underpowered, question stays open.**
+Of the 25 timeout exits since the revive, 8 have price paths extending ~55s past the exit.
+Median best-ever move against our actual buy price over that extra horizon: **−0.75c**,
+with only 2 of 8 ever reaching target. That points the opposite way — those trades were
+wrong at entry, not exited early.
+
+The two results are not directly comparable: the n=154 figure conditions on *successful*
+touches (survivorship), while the n=8 figure samples actual timeouts without conditioning.
+n=8 settles nothing. **Do not change `timeout_seconds` on either number.**
+
+The sport split reframes this anyway: NHL's median time-to-converge is **4480ms with p75
+at 21.2s** — past the cutoff — while MLB is 661ms and CFB 457ms. If the timeout is too
+short, it is too short *for NHL specifically*, which may be an argument about which sports
+to trade rather than about the timeout.
+
+**Protocol:** re-run the convergence simulation at 15s / 20s / 30s / 45s horizons,
+**split by sport**, and compare hit rate against the adverse price drift over the extra
+hold time. This is a pure data question — no live trading needed. Caveat: entry price in
+the simulation is the logged `poly_ask` at t=0, not an actual fill.
 
 ---
 
@@ -226,12 +242,20 @@ specific abbreviations at risk: [sports.md](sports.md#nba-slug-derivation-is-unv
 
 ## WS staleness vs fill rate
 
-Polymarket WS age at fire is median 157ms for fills vs 296ms for non-fills (max 159s).
-Correlation is real; causation is not established — stale may mean *quiet* rather than
-*wrong* (BUF@MON won on a 71s-stale price).
+🚨 **Reset 2026-09-22 — the metric this question was built on was broken.** Until
+`9846e13`, `_populate_stores` reset `fetched_at` to "now" on every hourly discovery, so
+`poly_ws_age_ms` reported a **floor, not an age**. The "median 157ms for fills vs 296ms
+for non-fills" result that opened this question is not trustworthy, and neither is the
+reversed ordering measured over 2026-09-19→22 (fills 4194ms vs non-fills 3740ms, median
+1471ms overall). Both were recorded on the same broken instrument.
 
-**Protocol:** control for market activity. If stale-but-quiet fills fine, the signal is
-useless as a filter; if stale predicts non-fill independently, add it as gate 12.
+Causation was never established anyway — stale may mean *quiet* rather than *wrong*
+(BUF@MON won on a 71s-stale price).
+
+**Protocol, unchanged but now runnable for the first time:** on data from `9846e13`
+onward, control for market activity. If stale-but-quiet fills fine, the signal is useless
+as a filter; if stale predicts non-fill independently, add it as gate 12. **Do not pool
+pre- and post-fix data.**
 
 ---
 
@@ -350,15 +374,26 @@ we already do, is in the memory file
 The economics only work if the entry price is genuinely below the true win probability.
 Our whole entry signal is *Kalshi disagrees with Polymarket*, which presumes **Kalshi is
 fair value** — an assumption this project has never tested. Everything we have validated
-(77% counterfactual win rate, 67.9% convergence hit rate) measures **price movement over
-15 seconds**, not resolution accuracy. Those are different claims and the second does not
+(77% counterfactual win rate, and a convergence rate now known to run 70.5% CFB / 62.2%
+MLB / 32.8% NHL rather than one 67.9% constant) measures **price movement over 15
+seconds**, not resolution accuracy. Those are different claims and the second does not
 follow from the first.
 
-**The specific worry is adverse selection.** 52.6% of 4%+ arbs close in under 85ms, faster
-than our round trip, so we only ever fill the *slow* ones. A slow arb is a quote nobody is
-correcting — which makes it likelier that **Kalshi is stale**, not that Polymarket is
+**The specific worry is adverse selection.** 72.9% of 4%+ arbs close in under 85ms
+(re-measured 2026-09-22; the 52.6% previously quoted here understated it), faster than our
+134ms median round trip, so we only ever fill the *slow* ones. A slow arb is a quote nobody
+is correcting — which makes it likelier that **Kalshi is stale**, not that Polymarket is
 cheap. That is the exact inverse of what the hold thesis needs. If true, hold-to-maturity
 EV is negative and the question closes.
+
+**2026-09-22 evidence, consistent with adverse selection but not proof of it.** The sport
+we fill most easily is the one that converges worst: NHL took 73% of our volume, has the
+longest median time-to-converge (4480ms vs MLB 661ms), the thinnest books (median depth 11
+vs CFB 51), and converged 1-of-24 realised. Slow, thin and unprofitable travel together,
+exactly as the adverse-selection story predicts. Against that, the ws_age ordering at fire
+also reversed — fills now look *staler* than non-fills, the inverse of the historical
+figure — but that metric was itself broken until `9846e13`, so it carries no weight yet.
+See [findings-validated.md](findings-validated.md#convergence-rate-is-a-property-of-the-sport-not-of-the-filter-stack).
 
 Existing hold-to-expiry data is n=6 and accidental (the 2026-05-14 fictional-fill
 incident): SF@LAD −$0.40, SEA@HOU −$0.46, 4 mixed-outcome SHORT holds.

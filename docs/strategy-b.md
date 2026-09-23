@@ -123,5 +123,10 @@ analysis says the signal is fine and throughput is the constraint.
   as a loss that resolution would have erased. Whether that is a real opportunity depends
   on an untested premise — that Kalshi is fair value — measured by
   [open-questions.md](open-questions.md#does-the-arb-signal-predict-the-outcome-or-only-the-next-15-seconds-of-price).
-- **56% of 4%+ arbs close in under 85ms** — faster than our fastest VPS→Poly round trip.
+- **72.9% of 4%+ arbs close in under 85ms** (n=1964, 2026-09-19→22; earlier docs said 56%
+  and 52.6% — both understated it). Median arb life 36ms vs our 134ms median buy latency.
   That is a hard structural ceiling on any taker-side strategy.
+- **Convergence is a property of the sport.** Within-15s convergence runs 70.5% CFB /
+  62.2% MLB / **32.8% NHL**, on median book depths of 51 / 18 / 11. Treating it as one
+  number hid the fact that most of our volume was going into the worst sport. →
+  [findings-validated.md](findings-validated.md#convergence-rate-is-a-property-of-the-sport-not-of-the-filter-stack)
