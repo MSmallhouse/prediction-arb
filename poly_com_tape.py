@@ -103,7 +103,7 @@ def _games_from_durations(path: Path, hours_back: float) -> list[tuple[str, str,
                 continue
             if r.get("sport") not in ("MLB", "NHL", "NBA"):
                 continue  # CFB slugs are not derivable — they use a name-pair join
-            gd = (r.get("game_datetime") or "")[:10]
+            gd = r.get("game_datetime") or ""
             if not gd or not r.get("game"):
                 continue
             key = (r["game"], gd, r["sport"])
@@ -112,11 +112,26 @@ def _games_from_durations(path: Path, hours_back: float) -> list[tuple[str, str,
     return [k for k, _ in sorted(last_seen.items(), key=lambda kv: kv[1], reverse=True)]
 
 
-def _candidate_slugs(game: str, date_utc: str, sport: str) -> list[str]:
+# US Eastern offset. Sports slugs use the US calendar date, and every date in
+# this window falls inside DST (EDT, UTC-4). Revisit at the November changeover.
+_US_EASTERN_OFFSET = timedelta(hours=4)
+
+
+def _candidate_slugs(game: str, game_datetime_utc: str, sport: str) -> list[str]:
     """
-    .com slug is {sport}-{away}-{home}-{YYYY-MM-DD} on the US LOCAL date, while
-    game_datetime is UTC — a 7pm ET game is already the next day in UTC. Try the
-    UTC date and the day before it; one of them is the local date.
+    .com slug is {sport}-{away}-{home}-{YYYY-MM-DD} on the US CALENDAR date,
+    while game_datetime is UTC — a 7:05pm game in Texas is 00:05 the next day in
+    UTC. Convert to US Eastern and use that date.
+
+    The first version tried the UTC date and then the day before, which is wrong
+    whenever the same two teams play on consecutive days — i.e. every MLB series.
+    Measured 2026-09-23: NYM @ TEX at 2026-09-23T00:05Z is a 7:05pm Sep 22 game,
+    but BOTH mlb-nym-tex-2026-09-22 and -09-23 exist on .com, so trying the UTC
+    date first matched the NEXT day's game — an open market with $5k volume
+    standing in for a finished one with $486k. Silently wrong, not absent.
+
+    The UTC-date fallbacks are kept last, so a coverage gap degrades to a miss
+    rather than to a mismatch.
     """
     try:
         away, home = (x.strip() for x in game.split("@"))
@@ -127,10 +142,17 @@ def _candidate_slugs(game: str, date_utc: str, sport: str) -> list[str]:
     if not ap or not hp:
         return []
     try:
-        d = datetime.strptime(date_utc, "%Y-%m-%d").date()
+        dt = datetime.fromisoformat(game_datetime_utc.replace("Z", "+00:00"))
     except ValueError:
         return []
-    return [f"{s}-{ap}-{hp}-{d}", f"{s}-{ap}-{hp}-{d - timedelta(days=1)}"]
+    eastern = (dt - _US_EASTERN_OFFSET).date()
+    utc_date = dt.date()
+    out = [f"{s}-{ap}-{hp}-{eastern}"]
+    for d in (utc_date, utc_date - timedelta(days=1)):
+        cand = f"{s}-{ap}-{hp}-{d}"
+        if cand not in out:
+            out.append(cand)
+    return out
 
 
 def _game_winner_market(event: dict) -> dict | None:
@@ -174,7 +196,14 @@ def resolve_tokens(games, max_games: int) -> dict[str, dict]:
             for tid, outcome in zip(ids, outcomes):
                 tokens[tid] = {"slug": slug, "sport": sport, "outcome": outcome}
             matched += 1
-            log.info("matched %-13s %s -> %s", game, sport, slug)
+            rank = {0: "eastern", 1: "utc", 2: "utc-1"}.get(
+                _candidate_slugs(game, date_utc, sport).index(slug), "?"
+            )
+            log.info(
+                "matched %-13s %s -> %-26s (%s rule, closed=%s vol=%s)",
+                game, sport, slug, rank, events[0].get("closed"),
+                round(float(events[0].get("volume") or 0)),
+            )
             break
         else:
             log.info("no .com market for %-13s %s %s", game, sport, date_utc)
