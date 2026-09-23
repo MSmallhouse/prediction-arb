@@ -20,6 +20,7 @@ scanner.log
 scanner.log.*
 convergence_log.csv
 executions.csv
+arb-memsample.csv
 
 # Historical / VPS snapshots (large, local-only)
 historical-data/
