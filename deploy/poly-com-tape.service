@@ -6,6 +6,14 @@ After=network-online.target
 Type=oneshot
 User=ubuntu
 ExecStart=/home/ubuntu/prediction-arb/deploy/poly-com-tape.sh
+
+# Sized off the 2026-09-27 smoke test: 10 games produced 9,500 rows/min at full
+# tick, i.e. ~600MB of raw CSV for a 5h night on a disk with 2.1GB free. Three
+# hours of 8 games is ~1.4M rows — far more than the lead/lag question needs —
+# and leaves room for a week of gzipped archives alongside it.
+Environment=MINUTES=180
+Environment=MAX_GAMES=8
+Environment=MIN_FREE_MB=900
 TimeoutStartSec=7h
 
 # Hard-isolate from the scanner. The box has 908MB RAM and 1GB swap, and the
