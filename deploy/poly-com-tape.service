@@ -11,8 +11,12 @@ ExecStart=/home/ubuntu/prediction-arb/deploy/poly-com-tape.sh
 # tick, i.e. ~600MB of raw CSV for a 5h night on a disk with 2.1GB free. Three
 # hours of 8 games is ~1.4M rows — far more than the lead/lag question needs —
 # and leaves room for a week of gzipped archives alongside it.
-Environment=MINUTES=180
-Environment=MAX_GAMES=8
+# MLB's regular season ends 2026-09-27, so from 09-29 the slate is NHL (plus CFB,
+# which has no derivable .com slug). NHL is thinner than MLB and its start times
+# run 7-10pm ET, so widen the window rather than the game cap: 4h from 22:50 UTC
+# reaches 10:50pm ET and covers the West Coast starts the 3h window cut off.
+Environment=MINUTES=240
+Environment=MAX_GAMES=10
 Environment=MIN_FREE_MB=900
 TimeoutStartSec=7h
 
