@@ -14,6 +14,7 @@
 #   ./deploy/ops.sh heartbeats  full RSS/lag history (reads rotated logs correctly)
 #   ./deploy/ops.sh memguard [on|off]  hourly memory-triggered graceful restart
 #   ./deploy/ops.sh units       install systemd units + timers + logrotate from deploy/
+#   ./deploy/ops.sh tape [on|off|run|show]  nightly polymarket.com research tape
 #
 # Add --force to restart/deploy to override the open-position guard.
 
@@ -154,6 +155,10 @@ NOTE: the daily 10:00 UTC timer will NOT restart a stopped service - start it yo
              # sampling). Pull it too, or the swap data is silently absent from
              # the dated directory and RSS looks like the whole story again.
              scp -i "$KEY" "$HOST:/var/log/arb-memsample.csv" "$dest/arb-memsample.csv" 2>/dev/null || true
+             # Research tapes live in research/ and are gzipped once finished, so
+             # the *.csv glob above sees today's open tape only. Take the lot.
+             mkdir -p "$dest/research"
+             scp -i "$KEY" "$HOST:~/prediction-arb/research/*" "$dest/research/" 2>/dev/null || true
              echo "pulled into $dest/"; ls -la "$dest" ;;
 
   # logrotate uses delaycompress, so scanner.log.1 is NOT gzipped. Grepping only
@@ -176,6 +181,32 @@ NOTE: the daily 10:00 UTC timer will NOT restart a stopped service - start it yo
                     echo "which does NOT drain the CSV queue. Re-enable: ./deploy/ops.sh memguard on" ;;
                on)  "${SSH[@]}" "sudo systemctl enable --now arb-scanner-memguard.timer 2>&1 | tail -1"; echo "memguard ON" ;;
                *)   "${SSH[@]}" "systemctl list-timers 'arb-scanner*' --all --no-pager | head -5; echo; echo 'recent memguard decisions:'; grep memguard /home/ubuntu/prediction-arb/scanner.log | tail -5" ;;
+             esac ;;
+
+  # Nightly .com tape. Separate from 'units' because it is research, not trading
+  # infrastructure: it must be switchable off in one command without touching the
+  # scanner's own units. 'run' starts a bounded collection now, in its own cgroup.
+  tape)      preflight
+             case "${2:-show}" in
+               on)  scp -i "$KEY" deploy/poly-com-tape.service deploy/poly-com-tape.timer "$HOST:/tmp/" >/dev/null
+                    "${SSH[@]}" "sudo cp /tmp/poly-com-tape.service /tmp/poly-com-tape.timer /etc/systemd/system/ \
+                      && sudo systemctl daemon-reload \
+                      && sudo systemctl enable --now poly-com-tape.timer 2>&1 | tail -1; echo 'tape timer ON (scanner untouched)'"
+                    "${SSH[@]}" "systemctl list-timers 'poly-com-tape*' --all --no-pager | head -3" ;;
+               off) "${SSH[@]}" "sudo systemctl disable --now poly-com-tape.timer 2>&1 | tail -1; echo 'tape timer OFF'" ;;
+               run) mins="${3:-60}"
+                    "${SSH[@]}" "sudo systemd-run --unit=poly-com-tape-adhoc --uid=ubuntu \
+                      -p Type=oneshot -p MemoryMax=250M -p MemorySwapMax=0 -p CPUQuota=50% -p TimeoutStartSec=7h \
+                      -p Environment=MINUTES=$mins \
+                      /home/ubuntu/prediction-arb/deploy/poly-com-tape.sh 2>&1 | tail -2"
+                    echo "ad-hoc ${mins}min collection started — ./deploy/ops.sh tape show" ;;
+               # Row counts, not 'active'. A collector that resolves zero games
+               # exits 0 and writes a header — indistinguishable from a quiet
+               # slate unless you look at the rows.
+               *)   "${SSH[@]}" "systemctl list-timers 'poly-com-tape*' --all --no-pager | head -3; echo; \
+                      echo 'recent tape runs:'; tail -12 ~/prediction-arb/research/tape.log 2>/dev/null || echo '  (no runs yet)'; echo; \
+                      echo 'tapes:'; ls -la ~/prediction-arb/research/ 2>/dev/null | tail -8; echo; \
+                      for f in ~/prediction-arb/research/poly_com_tape_*.csv; do [ -f \"\$f\" ] && echo \"  \$(basename \$f): \$(( \$(wc -l <\"\$f\") - 1 )) rows\"; done" ;;
              esac ;;
 
   # Installs unit files from deploy/ and reloads. Does NOT restart the scanner —

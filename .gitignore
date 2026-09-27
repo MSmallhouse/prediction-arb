@@ -26,3 +26,8 @@ arb-memsample.csv
 historical-data/
 *_vps.csv
 *_vps.log
+vps_pull_*/
+research_tape/
+research/
+poly_com_tape*.csv
+poly_com_tape*.csv.gz

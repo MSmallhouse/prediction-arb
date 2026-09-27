@@ -1,0 +1,19 @@
+[Unit]
+Description=Nightly polymarket.com full-tick price tape (research, read-only)
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+ExecStart=/home/ubuntu/prediction-arb/deploy/poly-com-tape.sh
+TimeoutStartSec=7h
+
+# Hard-isolate from the scanner. The box has 908MB RAM and 1GB swap, and the
+# scanner dies of SWAP exhaustion rather than the cgroup cap — so deny this
+# process swap entirely: if it misbehaves the kernel kills IT, inside its own
+# cgroup, instead of squeezing the thing that holds positions.
+MemoryMax=250M
+MemorySwapMax=0
+CPUQuota=50%
+Nice=10
+IOSchedulingClass=idle

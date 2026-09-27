@@ -1,0 +1,12 @@
+[Unit]
+Description=Collect a .com price tape each evening slate
+
+[Timer]
+# 22:50 UTC = 6:50pm ET, just before the evening MLB/NHL slate, running 5h to
+# cover it. Deliberately NOT Persistent: a missed night is a missed night — a
+# catch-up run at noon records finished games and looks like a broken collector.
+OnCalendar=*-*-* 22:50:00 UTC
+Persistent=false
+
+[Install]
+WantedBy=timers.target
