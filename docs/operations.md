@@ -1,5 +1,9 @@
 # Operations runbook
 
+> 🛑 **Project shut down 2026-10-06** — trading stopped, EC2 instance terminated. **The box no longer exists**: `i-0923ce83c9a4b7047` is terminated, its volume deleted, and `98.82.172.44` released, so `ops.sh` and every SSH command below will fail. Kept as the record of how it ran. The decommissioning steps and the $0 AWS leftovers are in [shutdown-review.md](shutdown-review.md#decommissioning-record-2026-10-06).
+> See [shutdown-review.md](shutdown-review.md) before acting on anything below.
+
+
 ## Operating model
 
 **Claude operates this infrastructure.** Building, deploying, restarting, stopping, health

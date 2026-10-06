@@ -1,5 +1,8 @@
 # Future work
 
+> 🛑 **Project shut down 2026-10-06** — trading stopped, EC2 instance terminated. None of this is worth building: #1 (maker bids) was tested offline and rejected, and every other item optimizes a path whose edge belongs to a faster participant. The single revival condition is in the review.
+> See [shutdown-review.md](shutdown-review.md) before acting on anything below.
+
 Ranked by leverage. Nothing here is implemented. Ideas that were considered and rejected
 live in [findings-rejected.md](findings-rejected.md) — check there before adding one back.
 
@@ -69,7 +72,7 @@ Candidates, cheapest first:
   into outcome risk, and because the two known blockers on `quantity > 1` are both
   exit-side ([open-questions.md](open-questions.md#known-unfixed-bug-quantity-scaling)),
   a no-exit path sidesteps them entirely. **Gated on** the counterfactual in
-  [open-questions.md](open-questions.md#does-the-arb-signal-predict-the-outcome-or-only-the-next-15-seconds-of-price)
+  [findings-validated.md](findings-validated.md#the-arb-signal-predicts-the-winner--but-the-edge-belongs-to-whoever-is-fastest)
   — the whole idea rests on Kalshi being fair value, which is untested, and on our fills
   not being adversely selected, which is the likelier failure.
 

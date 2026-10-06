@@ -128,6 +128,13 @@ never implemented**, and `executor.py` hardcodes `0.05` inline rather than impor
 constant. There are **no per-sport fee coefficients** — an older claim that CFB uses 0.0695
 is unsupported by the code.
 
+🚨 **The exchange charges ≈ 0.0695, not 0.05** (found 2026-10-06 from the activity ledger).
+Taker fees since 2026-09-19 were $3.17 over 210 taker legs; `0.0695·P·(1−P)` rounded to the
+cent reproduces it ($3.15), `0.05` does not ($1.96). Every Polymarket market object carries
+`feeCoefficient: 0.0695` across sports — the code's 0.05 was wrong everywhere, not only for
+CFB, so every logged `buy_fee`/`sell_fee` understates real fees by ~0.3-0.5c per leg.
+→ [shutdown-review.md](shutdown-review.md#corrections-found-during-the-review)
+
 ```python
 kalshi_taker = 0.07   * P * (1 - P)   # peaks 1.75c at P=0.5   [in code]
 poly_taker   = 0.05   * P * (1 - P)   # peaks 1.25c at P=0.5   [in code]

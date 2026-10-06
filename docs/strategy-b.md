@@ -1,5 +1,8 @@
 # Strategy B — single-leg convergence
 
+> 🛑 **Project shut down 2026-10-06** — trading stopped, EC2 instance terminated. This describes the strategy as it last ran (commit `5ec5426`). Its live result: −$2.96 over 17 days, 109 fills.
+> See [shutdown-review.md](shutdown-review.md) before acting on anything below.
+
 **Verified against code 2026-09-19.** Values below are what `executor.py` actually does,
 not what older notes claimed. Discrepancies found in that audit are listed in
 [open-questions.md § Doc/code drift](open-questions.md#doccode-drift-found-2026-09-19).
@@ -122,7 +125,7 @@ analysis says the signal is fine and throughput is the constraint.
   considered, so a position stopped out at −9.5c on a team that goes on to win is booked
   as a loss that resolution would have erased. Whether that is a real opportunity depends
   on an untested premise — that Kalshi is fair value — measured by
-  [open-questions.md](open-questions.md#does-the-arb-signal-predict-the-outcome-or-only-the-next-15-seconds-of-price).
+  [findings-validated.md](findings-validated.md#the-arb-signal-predicts-the-winner--but-the-edge-belongs-to-whoever-is-fastest).
 - **72.9% of 4%+ arbs close in under 85ms** (n=1964, 2026-09-19→22; earlier docs said 56%
   and 52.6% — both understated it). Median arb life 36ms vs our 134ms median buy latency.
   That is a hard structural ceiling on any taker-side strategy.

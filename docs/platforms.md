@@ -38,7 +38,7 @@ CFTC-regulated. REST for discovery, `orderbook_delta` WebSocket for prices.
 ### Settled markets and their filter traps
 
 Probed 2026-09-20 while scoping the hold-to-maturity counterfactual
-([open-questions.md](open-questions.md#does-the-arb-signal-predict-the-outcome-or-only-the-next-15-seconds-of-price)).
+([findings-validated.md](findings-validated.md#the-arb-signal-predicts-the-winner--but-the-edge-belongs-to-whoever-is-fastest)).
 
 `GET /markets?series_ticker=KXMLBGAME&status=settled&limit=200` returns the game outcome
 directly: **`result`** (`yes`/`no`) and **`expiration_value`** (the winning team's label).
@@ -137,6 +137,32 @@ disagree, the API wins — and so does the user's lived experience in the Polyma
 
 Run `./deploy/ops.sh reconcile` after every session.
 
-**Caveat:** the activities API may not include our maker-side fills, so `SELL_CONVERGED`
-maker hits can show as "logged sell with no trade" false positives. The truer signal is
-the resolved-positions section.
+~~**Caveat:** the activities API may not include our maker-side fills.~~ **Wrong —
+corrected 2026-10-06.** Maker fills are present: they are the trades with
+`isAggressor: false`, and our order is in `trade.passive` rather than `trade.aggressor`
+(42 such trades in the final dump). Pick the side by `isAggressor` before reading
+`intent`/`action`.
+
+### Polymarket US activity ledger traps
+
+Found building the final P&L on 2026-10-06. Full context in
+[shutdown-review.md](shutdown-review.md#corrections-found-during-the-review).
+
+- **The cleanest P&L source is buying power, not the ledger.** The private WS logs
+  `buying power N` on every reconnect, so `zgrep -oh "buying power [0-9.]*" scanner.log*`
+  gives a balance time series. Adjust for deposits/bonuses and you have truth.
+- **`ACTIVITY_TYPE_TRANSFER` amounts are unsigned.** A $5 clawback (out) and a $5 credit
+  (in) both read `amount: "5"`. Read the transaction description in the raw JSON, or the
+  buying-power step, to get the sign. Summing naively turned −$2.96 into −$12.96.
+- **YES and NO net into one `netPosition` per slug.** `BUY_SHORT` on a market where we are
+  long YES reduces the net position rather than opening a separate one, so per-side
+  bought/sold counts (what `reconcile.py` prints) produce false "never sold" mismatches.
+  `realized` and `cost` on resolutions are computed on the netted position and do not map
+  cleanly to individual trades.
+- **`trade.cost` is the net cash amount** for our side (price × qty ± commission), and
+  `effectiveRealizedPnl` on a sell already includes both buy and sell fees.
+- **The fee coefficient is on the market object**: `market.feeCoefficient` (0.0695 on
+  every market seen). Trust it over any constant in our code.
+- **Bonuses are held, not cash.** `account.balances()` exposes `bonusReservation` /
+  `bonusHold`; `availableToWithdraw` excludes them. Release appears tied to trading
+  ("Releasing 0.35 in incentives due to position change").

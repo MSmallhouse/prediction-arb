@@ -9,6 +9,7 @@ end-of-session documentation protocol.
 
 | Need | Doc |
 |---|---|
+| **Why it was shut down, final P&L, revival condition — read first** | [docs/shutdown-review.md](docs/shutdown-review.md) |
 | How the code is laid out, run loop, discovery, arb math, fees | [docs/architecture.md](docs/architecture.md) |
 | Kalshi / Polymarket API traps and undocumented behaviour | [docs/platforms.md](docs/platforms.md) |
 | Per-sport support, slug derivation, CFB matching, capacity | [docs/sports.md](docs/sports.md) |
@@ -26,15 +27,15 @@ Kalshi and Polymarket US price the same game differently for tens to hundreds of
 milliseconds. We detect the gap and trade **one leg only**: buy the cheap side on
 Polymarket, sell into the convergence. The arb is the entry trigger, not the position.
 
-Signal quality is real but **sport-dependent**, which the old single-number framing hid:
-within-15s convergence is 70.5% for CFB, 62.2% for MLB and **32.8% for NHL** (replay,
-2026-09-22). The often-quoted 67.9% is the MLB/CFB figure, not a system constant.
-
-**The bottleneck is sport mix, not fill rate.** "Fill rate is the bottleneck" held while
-per-trade EV was positive; at −2.85c/trade a better fill rate loses money faster. Fixing
-which sports we trade comes first. → [docs/findings-validated.md](docs/findings-validated.md#convergence-rate-is-a-property-of-the-sport-not-of-the-filter-stack)
+**What killed it (2026-10-06):** neither sport mix nor fill rate. The replay convergence
+rates (70.5% CFB, 62.2% MLB, 67.9% overall) were measured on arbs a faster participant
+takes; the arbs we fill converged 9-17% and hold to ≈0 at settlement. The bottleneck is
+**speed**, and it is not purchasable at our scale.
+→ [docs/shutdown-review.md](docs/shutdown-review.md)
 
 ## Invariants — violating any of these has cost real money
+
+These governed the live system and still apply to any revival.
 
 - **Every gate in this system fails closed and quiet.** A readiness flag that never sets
   looks exactly like a market with no opportunities. Six silent failures so far; process
@@ -73,52 +74,33 @@ which sports we trade comes first. → [docs/findings-validated.md](docs/finding
   unvalidated for football — the first Saturday slate is the measurement, not a rollout.
   → [docs/open-questions.md](docs/open-questions.md#is-cfb-tradeable)
 
-## Current state (2026-09-23)
+## Current state (2026-10-06): SHUT DOWN
 
-Live on AWS EC2 t3.micro under systemd, trading MLB + NHL + **CFB** (CFB enabled
-2026-09-22, commit `9846e13`, first slate Saturday 2026-09-26). Revived 2026-09-19 after a
-127-day outage caused by four independent silent breakages. OOM-killed twice since —
-2026-09-20 20:50 and 2026-09-22 06:30 UTC.
+**Trading stopped 2026-10-06 20:55 UTC. EC2 instance `i-0923ce83c9a4b7047` terminated, its
+volume deleted; `ops.sh` and every SSH command in the docs now fail by design.** Nothing
+billable remains on AWS for this project. → [docs/shutdown-review.md](docs/shutdown-review.md)
 
-Net P&L since the revive is **−$0.94** over n=33 closed trades (**−2.85c/trade**). The
-loss is concentrated in one sport: NHL is 24 of those 33 trades and −$0.73 of the loss,
-converging 1/24. MLB is 4/9 converged, −$0.21. Converged exits remain the only profitable
-path (5/5); timeouts are 2/25 and price-drops 0/3. **NHL was deliberately left tradeable**
-to keep collecting on the worst sport rather than to make money on it.
+Final real P&L 2026-09-19 → 10-06: **≈ −$2.96** over 109 fills (lifetime trading ≈ −$5.6).
+The verdict: the signal is real and predicts game winners (+5.9c/side held to settlement,
+n=428 games), but **92% of gated arbs are taken by a faster participant within 200ms, and
+those carry all the edge; the arbs we fill carry ≈0.** The edge's half-life is ~60-80ms
+against our 94ms round trip. Every "fill rate is the bottleneck" claim in older docs was
+measured on the population we lose.
 
-Highest-leverage open items: whether CFB's convergence edge survives contact with real
-fills, the memory leak's true source, and event-loop lag. All are **blocked on elapsed
-runtime, not work** — and our own deploys reset the clock, so batch changes while a
-measurement window is open. See [docs/open-questions.md](docs/open-questions.md) and the
-open window in
-[docs/performance-log.md](docs/performance-log.md#measurement-window-opened-2026-09-23-0011-utc).
+**Revival condition (the only one):** a measured Polymarket US order round trip of p50 ≤
+30ms. Without it, nothing in [docs/future-work.md](docs/future-work.md) is worth building.
 
-## Operating model
+## Operating model (historical)
 
-**Claude runs the infrastructure.** Building, deploying, restarting, stopping and health
-checks on the VPS and AWS are Claude's to execute via `./deploy/ops.sh`; the user directs
-rather than types. Do not hand the user a command to paste as the default answer — run it,
-report what happened, and surface the decision instead of the keystrokes.
+While live, Claude ran the infrastructure via `./deploy/ops.sh`; see
+[docs/operations.md](docs/operations.md). There is no infrastructure now. Final data lives
+in `vps_pull_20261006_final/` (local-only, gitignored — the repo is PUBLIC).
 
-Still check in before acting: anything destructive, anything that stops trading, and
-anything with an open position at risk. Approval for one action is not approval for the
-next. Manual terminal work remains a valid fallback when tooling cannot do it (or when the
-user asks), and a few things genuinely require the user — anything needing an interactive
-login, or a new third-party account. → [docs/operations.md](docs/operations.md)
+## Analysing the archive
 
-## Quick reference
-
-```bash
-./deploy/ops.sh status      # live health: service, commit, heartbeat, alerts, stuck positions
-./deploy/ops.sh deploy      # the ONLY deploy path: push → pull → syntax check → restart → verify
-./deploy/ops.sh restart     # refuses if a position is open; --force to override
-./deploy/ops.sh reconcile
-```
-
-Never `scp` code or restart by hand — `ops.sh` encodes the safety checks, and scp
-desynchronizes the box's git state. Nothing deploys automatically; pushing does nothing
-until `ops.sh deploy` runs. SSH is IP-locked, so a timeout ≠ a dead box.
-
-Analyse a `vps_pull_*/` directory (`ops.sh pull` makes a dated one), never the stale
-repo-root CSVs. Read CLOSE rows only; quote
-medians, never means. → [docs/performance-log.md](docs/performance-log.md#how-to-read-the-data-files-without-getting-it-wrong)
+Analyse a `vps_pull_*/` directory (the final one is `vps_pull_20261006_final/`), never the
+stale repo-root CSVs. Read CLOSE rows only; quote medians, never means; bootstrap by game.
+For P&L use buying power or `poly_activities.json`, not `executions.csv` — and transfer
+amounts in the ledger are unsigned.
+→ [docs/performance-log.md](docs/performance-log.md#how-to-read-the-data-files-without-getting-it-wrong) ·
+[docs/platforms.md](docs/platforms.md#polymarket-us-activity-ledger-traps)

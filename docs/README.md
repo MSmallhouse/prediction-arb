@@ -7,10 +7,15 @@ already paid for is never paid for twice.
 `CLAUDE.md` in the repo root is the always-loaded index. It stays lean and points here.
 Everything long-form lives in this directory.
 
+> 🛑 **Project shut down 2026-10-06.** Trading stopped and the AWS instance terminated
+> after a review found the signal real but its edge captured by faster participants.
+> **Start at [shutdown-review.md](shutdown-review.md).** Everything else is historical record.
+
 ## Map
 
 | Doc | Contains | Read it when |
 |---|---|---|
+| [shutdown-review.md](shutdown-review.md) | **Why the project was shut down**, final P&L, the decisive evidence, decommissioning record, the one revival condition | **First, always** |
 | [architecture.md](architecture.md) | Module map, run loop, discovery flow, arb math, fee model, data files | Changing any code |
 | [platforms.md](platforms.md) | Kalshi + Polymarket US wire details, auth, API traps, undocumented behaviour | Touching a scraper or the API |
 | [sports.md](sports.md) | Per-sport support, slug derivation, team-name maps, CFB matching + capacity | Adding a sport, or a sport matches 0 markets |

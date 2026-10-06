@@ -142,3 +142,21 @@ no heartbeat — when the account has zero open orders. Gating readiness on it h
 and disables the executor silently. Confirmed via spike against both raw WS and the SDK's
 `PrivateWebSocket`. Details in [platforms.md](platforms.md#the-order-channel-is-silent-when-there-are-no-open-orders)
 and the outage in [incidents.md](incidents.md#2026-09-19-evening-the-executor-was-silently-disabled).
+
+---
+
+## Every remaining fix for Strategy B — rejected 2026-10-06, project shut down
+
+Evidence and numbers: [shutdown-review.md](shutdown-review.md). Each is rejected on data,
+not taste.
+
+| Proposed fix | Why it fails | Revisit if |
+|---|---|---|
+| **Hold to settlement** instead of the 15s exit | On our fills it moves −3.27c → ≈ +1.7c, CI ≈ [−8, +11]. Stops the bleeding, cannot be shown profitable: 1,700-9,000 trades (1-4+ years) to separate from zero | Race-winning latency exists |
+| **Pre-placed / resting maker bids** (was future-work #1) | A bid 1c under the t0 ask fills 11.8% of the time and those fills hold **−7.1c** (n=97); unfilled bids would have held +9.4c. A maker fills exactly when it is wrong | Never on this signal alone |
+| **Slower entry** ("Kalshi leads, buy later") | Hold EV +2.0c at 100ms, +0.4c at 200ms, −0.5c at 1s, −2.1c at 15s | — |
+| **Change sport mix** (drop NHL, add CFB) | Simulated P&L on our own fills is negative in every sport (CFB −2.9c, MLB −5.3c, NHL −2.2c); CFB lost −$1.45 live | — |
+| **Find a profitable filter subset** | 57 cells tested on the 109 closed trades; 2 positive, with n=2 and n=1 | — |
+| **Raise quantity** | Multiplies an edge indistinguishable from zero; at qty 10, monthly SD ≈ ±$65 against a $75 bankroll | Fill-level EV proven positive |
+| **Win more races with latency work** | Box is ~1ms from both venues; 94ms RTT is exchange + client. Our fastest decile (~64ms) is slower than the competitor's p25 (46ms) | Measured p50 RTT ≤ 30ms is available |
+

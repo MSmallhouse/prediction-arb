@@ -3,6 +3,11 @@
 Every number here carries its `n`, its date window, and the conditions it was measured
 under. A number without those is an opinion, not a measurement.
 
+> 🛑 **Final window and shutdown, 2026-10-06:** see
+> [the last section](#final-window-2026-09-19--2026-10-06-and-shutdown) and
+> [shutdown-review.md](shutdown-review.md). The complete final archive is
+> `vps_pull_20261006_final/` (local-only).
+
 **Canonical data source:** `vps_pull_20260919/` — the local `executions.csv` and
 `arb_durations_*.csv` in the repo root are strict **subsets** of it (verified by key-join:
 69/69, 855/855, 1377/1377 rows present). Use the VPS pull for anything analytical. The
@@ -466,3 +471,51 @@ everything`. The `yes_ask_size` reset fixed in `9846e13` is a candidate cause (i
 the depth gate input for every market once an hour) but this is **unconfirmed** — the
 alert fired at 23:14 and discovery runs at :30, which does not line up cleanly. If it
 recurs after this deploy, the cause is something else.
+
+---
+
+## Final window: 2026-09-19 → 2026-10-06, and shutdown
+
+Revival to shutdown, 17 days, MLB + NHL + CFB (from 2026-09-22) + NBA (preseason, from
+~10-04). Source: `vps_pull_20261006_final/` (complete box archive) and
+`vps_pull_20261006_2027/` (same CSVs plus `poly_activities.json` / `poly_ledger.csv`).
+
+**Real trading P&L ≈ −$2.96** (buying power 68.63 → 100.67, adjusted for +$10 deposit,
++$25 bonus, +$5 credit, −$5 clawback). Logged `executions.csv` P&L −$3.55. Detail in
+[shutdown-review.md](shutdown-review.md#ground-truth-what-it-actually-earned).
+
+| | n | Note |
+|---|---|---|
+| Attempts | 606 | median 17/day, max 120 (CFB Saturday) |
+| Fills | 109 | **18.0%** — down from 29.7% in May |
+| `ORDER_STATE_EXPIRED` | 489 | |
+| Exits: timeout / converged / price_drop / exit_failed | 81 / 19 / 7 / 2 | converged 17% vs 60-70% replay |
+| Median logged P&L per closed trade | −2.85c | |
+| Buy latency median, fills / failures | 94ms / 113ms | |
+| Median buy price / gross / `poly_depth` at fire | 0.50 / 4.5% / 19 | |
+
+| Sport | Attempts | Fill rate | Closed | Logged P&L |
+|---|---|---|---|---|
+| CFB | 284 | 12.0% | 34 | −$1.45 (incl. 2 exit_failed −$1.05) |
+| NHL | 159 | 32.7% | 52 | −$1.31 |
+| MLB | 156 | 13.5% | 21 | −$0.65 |
+| NBA | 7 | 28.6% | 2 | −$0.14 |
+
+**Converged exits remained the only profitable path** (19/19, +3.8 to +4.1c). Timeouts:
+median −3.3c. Price drops: median −10 to −12c.
+
+**MLB volume collapsed with the season**: attempts 15-32/day (09-20→09-27) fell to 0-9/day
+from 09-29; gated MLB arbs fell from 141-213/day to 3-67.
+
+**Arb speed, gated `arb_durations_4` CLOSE rows since 09-19 (n=4325):** median life
+**25ms**, 82% under 85ms, 92% under 150ms — faster again than the 36ms / 72.9% measured
+09-19→22.
+
+**Memory:** the 2026-09-23 window ran to shutdown with memguard able to see swap; the
+final process (started 2026-10-04 22:02 UTC) had 0 restarts and RSS 367-572MB. Not analysed
+further — the question no longer matters.
+
+Fees in `buy_fee`/`sell_fee` throughout this file use 0.05; the exchange charges ≈ 0.0695
+([architecture.md](architecture.md#fee-model)), so every logged P&L here is ~0.3-0.5c per
+leg too optimistic.
+

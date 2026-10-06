@@ -12,11 +12,17 @@ convergence data, **30 would have reached `buy_price + 5c` within 15s** if they 
 filled. The arbs we missed and would have lost on would have lost only a few cents each;
 the winners showed dramatic upside (0.30 → 0.51, 0.53 → 0.99 within 15s).
 
-**Implication:** the strategy is not the bottleneck — **fill rate is**. Do not spend
+⚠️ **Superseded 2026-10-06 — this implication was the project's central mistake.** The 77%
+was measured on `BUY_FAILED` arbs, i.e. races someone else won. Those are exactly the arbs
+with the edge; the ones we fill converge 9-17% of the time. See
+[the arb signal predicts the winner](#the-arb-signal-predicts-the-winner--but-the-edge-belongs-to-whoever-is-fastest)
+below and [shutdown-review.md](shutdown-review.md).
+
+~~**Implication:** the strategy is not the bottleneck — **fill rate is**. Do not spend
 optimization effort re-tuning `min_gross_spread`, `sell_target_offset` or
 `only_kalshi_opener` until fill rate is solved. See
 [strategy-b.md](strategy-b.md) for the parameters and
-[future-work.md](future-work.md) for the fill-rate roadmap.
+[future-work.md](future-work.md) for the fill-rate roadmap.~~
 
 ---
 
@@ -201,3 +207,29 @@ dataclass defaults every cycle (fixed 2026-09-22):
 
 Neither was found by reading the tick path, which is correct. Both are in the *discovery*
 path, which only runs hourly and leaves no log line when it clobbers live state.
+
+---
+
+## The arb signal predicts the winner — but the edge belongs to whoever is fastest
+
+**Validated 2026-10-06**, offline, closing the 2026-09-20 open question. Full evidence in
+[shutdown-review.md](shutdown-review.md#the-four-findings-that-decided-it); scripts in
+`analysis/2026-10-06-shutdown-review/`.
+
+- **Kalshi-opened arbs predict the game outcome.** Held to settlement at the t0 Polymarket
+  ask: **+5.86c/side [+4.43, +7.34]**, n=724 sides / 428 games, game-clustered bootstrap.
+  Out-of-sample Apr-May +6.0c; placebo (opener=poly) −0.4c; monotone in gross spread
+  (+3.9c at 4-5% → +19.0c at 10%+); positive in every sport. Kalshi behaves as fair value.
+- **The edge lives entirely in arbs someone else takes.** Ask lifted within 200ms: +7.7c
+  (n=912, 92% of arbs). Not lifted — the ones we can fill: −0.3c (n=77). Not explained by
+  depth (OLS lift +7.2c, depth ≈ 0).
+- **It is latency information with a ~60-80ms half-life**: +5.5c at 0ms, +2.0c at 100ms,
+  +0.4c at 200ms, negative from 1s.
+- **Replay vs live convergence is selection, not sport.** Lost races hit +5c within 15s
+  57.3% of the time (n=307); our fills 9.4% (n=32). Every replay figure in these docs
+  (77%, 67.9%, 70.5% CFB, 62.2% MLB) measured the population we lose, and so overstated
+  what a slower taker can earn.
+
+This is a validated *finding*, not a validated *strategy*: it is why the project was shut
+down.
+
